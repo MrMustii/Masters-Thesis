@@ -1,0 +1,5 @@
+Bootstrap: localimage
+From: container.sif
+
+%post
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3

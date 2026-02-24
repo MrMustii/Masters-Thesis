@@ -1,0 +1,30 @@
+name: masters
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - cartopy
+  - dask
+  - matplotlib
+  - numpy
+  - pandas
+  - rtree
+  - scipy
+  - trimesh
+  - typing_extensions
+  - xarray
+  - ipykernel
+  - google-cloud-storage
+  - ipywidgets
+  - pip:
+    - chex
+    - colabtools
+    - dinosaur-dycore
+    - dm-haiku
+    - dm-tree
+    - jax
+    - jraph
+    - pytough
+    - xarray-tensorstore
