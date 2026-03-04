@@ -11,8 +11,13 @@
 #SBATCH --time=00:20:00
 #SBATCH --mem=32G
 #SBATCH --account=project_465002687
+#SBATCH --mail-type=END
+#SBATCH --mail-user=s215225@dtu.dk
 
-module load CrayEnv
+mkdir -p /tmp/$USER
+export SINGULARITY_TMPDIR=/tmp/$USER
+export SINGULARITY_CACHEDIR=/tmp/$USER
+module load LUMI/25.03
 module load cotainr
-module load PRoot
-srun singularity build new_container.sif update.def
+module load CrayEnv
+cotainr build my_container.sif --base-image=/appl/local/containers/sif-images/lumi-rocm-rocm-6.2.4.sif  --conda-env=conda_venv.yml

@@ -1,0 +1,569 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1772613767.364393   62846 instrument.cc:563] Metric with name 'grpc.resource_quota.calls_dropped' registered more than once. Ignoring later registration.
+E0000 00:00:1772613767.364430   62846 instrument.cc:563] Metric with name 'grpc.resource_quota.calls_rejected' registered more than once. Ignoring later registration.
+E0000 00:00:1772613767.364434   62846 instrument.cc:563] Metric with name 'grpc.resource_quota.connections_dropped' registered more than once. Ignoring later registration.
+E0000 00:00:1772613767.364437   62846 instrument.cc:563] Metric with name 'grpc.resource_quota.instantaneous_memory_pressure' registered more than once. Ignoring later registration.
+E0000 00:00:1772613767.364440   62846 instrument.cc:563] Metric with name 'grpc.resource_quota.memory_pressure_control_value' registered more than once. Ignoring later registration.
+/project/project_465002687/Masters-Thesis/Googles_gencast/gencast_test.py:65: FutureWarning: In a future version, xarray will not decode the variable 'time' into a timedelta64 dtype based on the presence of a timedelta-like 'units' attribute by default. Instead it will rely on the presence of a timedelta64 'dtype' attribute, which is now xarray's default way of encoding timedelta64 values.
+To continue decoding into a timedelta64 dtype, either set `decode_timedelta=True` when opening this dataset, or add the attribute `dtype='timedelta64[ns]'` to this variable on disk.
+To opt-in to future behavior, set `decode_timedelta=False`.
+  example_batch = xarray.load_dataset(f).compute()
+/project/project_465002687/Masters-Thesis/Googles_gencast/gencast_test.py:67: FutureWarning: The return type of `Dataset.dims` will be changed to return a set of dimension names in future, in order to be more consistent with `DataArray.dims`. To access a mapping from dimension names to lengths, please use `Dataset.sizes`.
+  assert example_batch.dims["time"] >= 3  # 2 for input, >=1 for targets
+/project/project_465002687/Masters-Thesis/Googles_gencast/gencast_test.py:80: FutureWarning: The return type of `Dataset.dims` will be changed to return a set of dimension names in future, in order to be more consistent with `DataArray.dims`. To access a mapping from dimension names to lengths, please use `Dataset.sizes`.
+  example_batch, target_lead_times=slice("12h", f"{(example_batch.dims['time']-2)*12}h"), # All but 2 input frames.
+/project/project_465002687/Masters-Thesis/Googles_gencast/graphcast/rollout.py:295: FutureWarning: The return type of `Dataset.dims` will be changed to return a set of dimension names in future, in order to be more consistent with `DataArray.dims`. To access a mapping from dimension names to lengths, please use `Dataset.sizes`.
+  num_target_steps = targets_template.dims["time"]
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+2026-03-04 10:44:50.269043: W external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1035] Compiling 133 configs for 19 fusions on a single thread.
+E0304 10:45:20.304127   62846 buffer_comparator.cc:156] Difference at 16384: 0, expected 135.559
+E0304 10:45:20.304157   62846 buffer_comparator.cc:156] Difference at 16385: 0, expected 132.618
+E0304 10:45:20.304163   62846 buffer_comparator.cc:156] Difference at 16386: 0, expected 137.203
+E0304 10:45:20.304167   62846 buffer_comparator.cc:156] Difference at 16387: 0, expected 134.852
+E0304 10:45:20.304171   62846 buffer_comparator.cc:156] Difference at 16388: 0, expected 136.399
+E0304 10:45:20.304176   62846 buffer_comparator.cc:156] Difference at 16389: 0, expected 133.712
+E0304 10:45:20.304181   62846 buffer_comparator.cc:156] Difference at 16390: 0, expected 136.238
+E0304 10:45:20.304185   62846 buffer_comparator.cc:156] Difference at 16391: 0, expected 134.033
+E0304 10:45:20.304189   62846 buffer_comparator.cc:156] Difference at 16392: 0, expected 133.231
+E0304 10:45:20.304193   62846 buffer_comparator.cc:156] Difference at 16393: 0, expected 132.14
+2026-03-04 10:45:20.304201: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:45:20.356248   62846 buffer_comparator.cc:156] Difference at 49152: 0, expected 134.389
+E0304 10:45:20.356262   62846 buffer_comparator.cc:156] Difference at 49153: 0, expected 130.326
+E0304 10:45:20.356268   62846 buffer_comparator.cc:156] Difference at 49154: 0, expected 134.491
+E0304 10:45:20.356273   62846 buffer_comparator.cc:156] Difference at 49155: 0, expected 133.201
+E0304 10:45:20.356278   62846 buffer_comparator.cc:156] Difference at 49156: 0, expected 127.827
+E0304 10:45:20.356282   62846 buffer_comparator.cc:156] Difference at 49157: 0, expected 134.676
+E0304 10:45:20.356287   62846 buffer_comparator.cc:156] Difference at 49158: 0, expected 131.233
+E0304 10:45:20.356292   62846 buffer_comparator.cc:156] Difference at 49159: 0, expected 128.569
+E0304 10:45:20.356298   62846 buffer_comparator.cc:156] Difference at 49160: 0, expected 132.266
+E0304 10:45:20.356303   62846 buffer_comparator.cc:156] Difference at 49161: 0, expected 132.739
+2026-03-04 10:45:20.356310: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:45:20.458563   62846 buffer_comparator.cc:156] Difference at 16384: 5.44939, expected 256.702
+E0304 10:45:20.458582   62846 buffer_comparator.cc:156] Difference at 16385: 8.14506, expected 256.434
+E0304 10:45:20.458588   62846 buffer_comparator.cc:156] Difference at 16386: 5.13768, expected 246.584
+E0304 10:45:20.458593   62846 buffer_comparator.cc:156] Difference at 16387: 4.29957, expected 257.189
+E0304 10:45:20.458598   62846 buffer_comparator.cc:156] Difference at 16388: 4.78235, expected 259.957
+E0304 10:45:20.458603   62846 buffer_comparator.cc:156] Difference at 16389: 4.65255, expected 257.66
+E0304 10:45:20.458607   62846 buffer_comparator.cc:156] Difference at 16390: 3.84417, expected 256.214
+E0304 10:45:20.458612   62846 buffer_comparator.cc:156] Difference at 16391: 4.49972, expected 261.202
+E0304 10:45:20.458617   62846 buffer_comparator.cc:156] Difference at 16392: 3.91549, expected 256.565
+E0304 10:45:20.458623   62846 buffer_comparator.cc:156] Difference at 16393: 7.7993, expected 263.2
+2026-03-04 10:45:20.458630: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:45:20.509430   62846 buffer_comparator.cc:156] Difference at 16384: 3.139, expected 518.764
+E0304 10:45:20.509449   62846 buffer_comparator.cc:156] Difference at 16385: 6.82441, expected 522.746
+E0304 10:45:20.509454   62846 buffer_comparator.cc:156] Difference at 16386: 5.08821, expected 523.341
+E0304 10:45:20.509460   62846 buffer_comparator.cc:156] Difference at 16387: 3.71188, expected 523.45
+E0304 10:45:20.509465   62846 buffer_comparator.cc:156] Difference at 16388: 4.95063, expected 523.274
+E0304 10:45:20.509469   62846 buffer_comparator.cc:156] Difference at 16389: 3.55829, expected 517.101
+E0304 10:45:20.509475   62846 buffer_comparator.cc:156] Difference at 16390: 2.98956, expected 526.146
+E0304 10:45:20.509480   62846 buffer_comparator.cc:156] Difference at 16391: 4.10281, expected 523.402
+E0304 10:45:20.509485   62846 buffer_comparator.cc:156] Difference at 16392: 3.08872, expected 524.772
+E0304 10:45:20.509490   62846 buffer_comparator.cc:156] Difference at 16393: 6.54132, expected 532.446
+2026-03-04 10:45:20.509497: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:45:21.486783   62846 buffer_comparator.cc:156] Difference at 41504: 3.79151, expected 324.75
+E0304 10:45:21.486806   62846 buffer_comparator.cc:156] Difference at 41505: 5.27684, expected 313.169
+E0304 10:45:21.486812   62846 buffer_comparator.cc:156] Difference at 41506: 4.88918, expected 327.087
+E0304 10:45:21.486817   62846 buffer_comparator.cc:156] Difference at 41507: 6.78649, expected 326.437
+E0304 10:45:21.486821   62846 buffer_comparator.cc:156] Difference at 41508: 4.45335, expected 328.612
+E0304 10:45:21.486825   62846 buffer_comparator.cc:156] Difference at 41509: 3.97503, expected 326.904
+E0304 10:45:21.486830   62846 buffer_comparator.cc:156] Difference at 41510: 7.56079, expected 321.304
+E0304 10:45:21.486834   62846 buffer_comparator.cc:156] Difference at 41511: 5.47729, expected 313.286
+E0304 10:45:21.486838   62846 buffer_comparator.cc:156] Difference at 41512: 4.75795, expected 322.572
+E0304 10:45:21.486842   62846 buffer_comparator.cc:156] Difference at 41513: 3.87203, expected 316.285
+2026-03-04 10:45:21.486850: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:45:21.850412   62846 buffer_comparator.cc:156] Difference at 16384: 2.39323, expected 130.403
+E0304 10:45:21.850437   62846 buffer_comparator.cc:156] Difference at 16385: 1.24879, expected 127.298
+E0304 10:45:21.850443   62846 buffer_comparator.cc:156] Difference at 16386: 1.35773, expected 128.04
+E0304 10:45:21.850448   62846 buffer_comparator.cc:156] Difference at 16387: 1.5816, expected 128.04
+E0304 10:45:21.850453   62846 buffer_comparator.cc:156] Difference at 16388: 1.83459, expected 128.645
+E0304 10:45:21.850457   62846 buffer_comparator.cc:156] Difference at 16389: 2.62673, expected 130.389
+E0304 10:45:21.850462   62846 buffer_comparator.cc:156] Difference at 16390: 1.33499, expected 126.572
+E0304 10:45:21.850467   62846 buffer_comparator.cc:156] Difference at 16391: 1.22695, expected 127.807
+E0304 10:45:21.850472   62846 buffer_comparator.cc:156] Difference at 16392: 2.35689, expected 125.807
+E0304 10:45:21.850477   62846 buffer_comparator.cc:156] Difference at 16393: 1.97242, expected 122.977
+2026-03-04 10:45:21.850484: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+2026-03-04 10:47:13.682914: W external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1035] Compiling 294 configs for 42 fusions on a single thread.
+E0304 10:48:22.245668   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 16463.7
+E0304 10:48:22.245705   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 16388
+E0304 10:48:22.245716   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 16400.2
+E0304 10:48:22.245721   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 16503.6
+E0304 10:48:22.245727   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 16447.6
+E0304 10:48:22.245732   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 16473.6
+E0304 10:48:22.245737   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 16471.8
+E0304 10:48:22.245742   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 16378.1
+E0304 10:48:22.245749   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 16537.1
+E0304 10:48:22.245754   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 16400.8
+2026-03-04 10:48:22.245762: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.330493   62846 buffer_comparator.cc:156] Difference at 16: 6504.06, expected 25834.2
+E0304 10:48:22.330516   62846 buffer_comparator.cc:156] Difference at 17: 6488.57, expected 25838.3
+E0304 10:48:22.330528   62846 buffer_comparator.cc:156] Difference at 18: 6458.59, expected 25624.8
+E0304 10:48:22.330535   62846 buffer_comparator.cc:156] Difference at 19: 6497.72, expected 25727.4
+E0304 10:48:22.330541   62846 buffer_comparator.cc:156] Difference at 20: 6526.74, expected 25923.9
+E0304 10:48:22.330548   62846 buffer_comparator.cc:156] Difference at 21: 6492.91, expected 25775.9
+E0304 10:48:22.330556   62846 buffer_comparator.cc:156] Difference at 22: 6454.1, expected 25799.7
+E0304 10:48:22.330563   62846 buffer_comparator.cc:156] Difference at 23: 6504.02, expected 25844.1
+E0304 10:48:22.330570   62846 buffer_comparator.cc:156] Difference at 24: 6505.81, expected 25933.6
+E0304 10:48:22.330577   62846 buffer_comparator.cc:156] Difference at 25: 6484.71, expected 25915.1
+2026-03-04 10:48:22.330585: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.340265   62846 buffer_comparator.cc:156] Difference at 16: 6504.06, expected 25834.2
+E0304 10:48:22.340287   62846 buffer_comparator.cc:156] Difference at 17: 6488.57, expected 25838.3
+E0304 10:48:22.340298   62846 buffer_comparator.cc:156] Difference at 18: 6458.59, expected 25624.8
+E0304 10:48:22.340305   62846 buffer_comparator.cc:156] Difference at 19: 6497.72, expected 25727.4
+E0304 10:48:22.340311   62846 buffer_comparator.cc:156] Difference at 20: 6526.74, expected 25923.9
+E0304 10:48:22.340318   62846 buffer_comparator.cc:156] Difference at 21: 6492.91, expected 25775.9
+E0304 10:48:22.340325   62846 buffer_comparator.cc:156] Difference at 22: 6454.1, expected 25799.7
+E0304 10:48:22.340333   62846 buffer_comparator.cc:156] Difference at 23: 6504.02, expected 25844.1
+E0304 10:48:22.340339   62846 buffer_comparator.cc:156] Difference at 24: 6505.81, expected 25933.6
+E0304 10:48:22.340346   62846 buffer_comparator.cc:156] Difference at 25: 6484.71, expected 25915.1
+2026-03-04 10:48:22.340354: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.347207   62846 buffer_comparator.cc:156] Difference at 32: 45348.8, expected 25928.8
+E0304 10:48:22.347229   62846 buffer_comparator.cc:156] Difference at 33: 45155.9, expected 25808.7
+E0304 10:48:22.347239   62846 buffer_comparator.cc:156] Difference at 34: 45047, expected 25741.9
+E0304 10:48:22.347247   62846 buffer_comparator.cc:156] Difference at 35: 45020.6, expected 25742.9
+E0304 10:48:22.347253   62846 buffer_comparator.cc:156] Difference at 36: 45187.6, expected 25842.7
+E0304 10:48:22.347260   62846 buffer_comparator.cc:156] Difference at 37: 44961.3, expected 25674
+E0304 10:48:22.347267   62846 buffer_comparator.cc:156] Difference at 38: 45246.5, expected 25855.4
+E0304 10:48:22.347274   62846 buffer_comparator.cc:156] Difference at 39: 45017.4, expected 25752.9
+E0304 10:48:22.347281   62846 buffer_comparator.cc:156] Difference at 40: 45332.5, expected 25904
+E0304 10:48:22.347288   62846 buffer_comparator.cc:156] Difference at 41: 45404.6, expected 25941.4
+2026-03-04 10:48:22.347297: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.355683   62846 buffer_comparator.cc:156] Difference at 48: 6488.44, expected 25860.5
+E0304 10:48:22.355705   62846 buffer_comparator.cc:156] Difference at 49: 6511.13, expected 25900.1
+E0304 10:48:22.355715   62846 buffer_comparator.cc:156] Difference at 50: 6462.01, expected 25883.6
+E0304 10:48:22.355723   62846 buffer_comparator.cc:156] Difference at 51: 6440.52, expected 25815.2
+E0304 10:48:22.355730   62846 buffer_comparator.cc:156] Difference at 52: 6426.35, expected 25705.7
+E0304 10:48:22.355737   62846 buffer_comparator.cc:156] Difference at 53: 6449.03, expected 25731.3
+E0304 10:48:22.355744   62846 buffer_comparator.cc:156] Difference at 54: 6451.36, expected 25795.1
+E0304 10:48:22.355751   62846 buffer_comparator.cc:156] Difference at 55: 6531.15, expected 25984
+E0304 10:48:22.355758   62846 buffer_comparator.cc:156] Difference at 56: 6513.81, expected 25930.3
+E0304 10:48:22.355764   62846 buffer_comparator.cc:156] Difference at 57: 6483.93, expected 25918.4
+2026-03-04 10:48:22.355776: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.458466   62846 buffer_comparator.cc:156] Difference at 16384: 260.047, expected 524.415
+E0304 10:48:22.458495   62846 buffer_comparator.cc:156] Difference at 16385: 263.181, expected 520.796
+E0304 10:48:22.458506   62846 buffer_comparator.cc:156] Difference at 16386: 269.025, expected 529.863
+E0304 10:48:22.458512   62846 buffer_comparator.cc:156] Difference at 16387: 264.671, expected 513.883
+E0304 10:48:22.458519   62846 buffer_comparator.cc:156] Difference at 16388: 268.53, expected 522.585
+E0304 10:48:22.458526   62846 buffer_comparator.cc:156] Difference at 16389: 263.594, expected 516.162
+E0304 10:48:22.458532   62846 buffer_comparator.cc:156] Difference at 16390: 261.87, expected 534.231
+E0304 10:48:22.458539   62846 buffer_comparator.cc:156] Difference at 16391: 265.208, expected 523.37
+E0304 10:48:22.458546   62846 buffer_comparator.cc:156] Difference at 16392: 258.488, expected 513.524
+E0304 10:48:22.458552   62846 buffer_comparator.cc:156] Difference at 16393: 256.684, expected 518.981
+2026-03-04 10:48:22.458561: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.488134   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 16421.9
+E0304 10:48:22.488156   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 16375.6
+E0304 10:48:22.488166   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 16364.1
+E0304 10:48:22.488172   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 16383.3
+E0304 10:48:22.488178   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 16393.6
+E0304 10:48:22.488184   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 16316.2
+E0304 10:48:22.488190   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 16413.7
+E0304 10:48:22.488196   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 16450
+E0304 10:48:22.488202   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 16376.6
+E0304 10:48:22.488208   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 16415.4
+2026-03-04 10:48:22.488217: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.525301   62846 buffer_comparator.cc:156] Difference at 16384: 24634.7, expected 16429.5
+E0304 10:48:22.525324   62846 buffer_comparator.cc:156] Difference at 16385: 24666.2, expected 16467.9
+E0304 10:48:22.525334   62846 buffer_comparator.cc:156] Difference at 16386: 24721, expected 16499.4
+E0304 10:48:22.525341   62846 buffer_comparator.cc:156] Difference at 16387: 24657.9, expected 16435.7
+E0304 10:48:22.525347   62846 buffer_comparator.cc:156] Difference at 16388: 24708, expected 16499.3
+E0304 10:48:22.525354   62846 buffer_comparator.cc:156] Difference at 16389: 24757.5, expected 16529.1
+E0304 10:48:22.525360   62846 buffer_comparator.cc:156] Difference at 16390: 24515, expected 16339.5
+E0304 10:48:22.525367   62846 buffer_comparator.cc:156] Difference at 16391: 24660.7, expected 16435
+E0304 10:48:22.525373   62846 buffer_comparator.cc:156] Difference at 16392: 24532.9, expected 16380.9
+E0304 10:48:22.525380   62846 buffer_comparator.cc:156] Difference at 16393: 24743.5, expected 16492.4
+2026-03-04 10:48:22.525389: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.589244   62846 buffer_comparator.cc:156] Difference at 41504: -nan, expected 320.063
+E0304 10:48:22.589263   62846 buffer_comparator.cc:156] Difference at 41505: -nan, expected 326.201
+E0304 10:48:22.589272   62846 buffer_comparator.cc:156] Difference at 41506: -nan, expected 317.67
+E0304 10:48:22.589278   62846 buffer_comparator.cc:156] Difference at 41507: -nan, expected 313.582
+E0304 10:48:22.589284   62846 buffer_comparator.cc:156] Difference at 41508: -nan, expected 332.93
+E0304 10:48:22.589289   62846 buffer_comparator.cc:156] Difference at 41509: -nan, expected 326.088
+E0304 10:48:22.589296   62846 buffer_comparator.cc:156] Difference at 41510: -nan, expected 322.63
+E0304 10:48:22.589302   62846 buffer_comparator.cc:156] Difference at 41511: -nan, expected 332.661
+E0304 10:48:22.589308   62846 buffer_comparator.cc:156] Difference at 41512: -nan, expected 327.901
+E0304 10:48:22.589314   62846 buffer_comparator.cc:156] Difference at 41513: -nan, expected 324.852
+2026-03-04 10:48:22.589322: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.614689   62846 buffer_comparator.cc:156] Difference at 32: 7.28221, expected 16387.7
+E0304 10:48:22.614711   62846 buffer_comparator.cc:156] Difference at 33: 10.1296, expected 16327.4
+E0304 10:48:22.614722   62846 buffer_comparator.cc:156] Difference at 34: 8.50526, expected 16493.5
+E0304 10:48:22.614728   62846 buffer_comparator.cc:156] Difference at 35: 9.56516, expected 16641.5
+E0304 10:48:22.614735   62846 buffer_comparator.cc:156] Difference at 36: 9.76726, expected 16422.3
+E0304 10:48:22.614741   62846 buffer_comparator.cc:156] Difference at 37: 9.13254, expected 16460.9
+E0304 10:48:22.614748   62846 buffer_comparator.cc:156] Difference at 38: 6.36602, expected 16501.9
+E0304 10:48:22.614754   62846 buffer_comparator.cc:156] Difference at 39: 6.80529, expected 16320.5
+E0304 10:48:22.614760   62846 buffer_comparator.cc:156] Difference at 40: 8.68402, expected 16454.4
+E0304 10:48:22.614766   62846 buffer_comparator.cc:156] Difference at 41: 6.56459, expected 16414
+2026-03-04 10:48:22.614775: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.633054   62846 buffer_comparator.cc:156] Difference at 2720: 8.10077, expected 16491.8
+E0304 10:48:22.633076   62846 buffer_comparator.cc:156] Difference at 2721: 8.24069, expected 16477.3
+E0304 10:48:22.633086   62846 buffer_comparator.cc:156] Difference at 2722: 5.9215, expected 16456.6
+E0304 10:48:22.633093   62846 buffer_comparator.cc:156] Difference at 2723: 7.76425, expected 16415.4
+E0304 10:48:22.633099   62846 buffer_comparator.cc:156] Difference at 2724: 7.46828, expected 16409.3
+E0304 10:48:22.633105   62846 buffer_comparator.cc:156] Difference at 2725: 9.78909, expected 16409.1
+E0304 10:48:22.633110   62846 buffer_comparator.cc:156] Difference at 2726: 7.51033, expected 16477.6
+E0304 10:48:22.633117   62846 buffer_comparator.cc:156] Difference at 2727: 7.93307, expected 16383.6
+E0304 10:48:22.633123   62846 buffer_comparator.cc:156] Difference at 2728: 7.82293, expected 16475.3
+E0304 10:48:22.633129   62846 buffer_comparator.cc:156] Difference at 2729: 7.87212, expected 16499.9
+2026-03-04 10:48:22.633138: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.680310   62846 buffer_comparator.cc:156] Difference at 16384: -nan, expected 132.435
+E0304 10:48:22.680334   62846 buffer_comparator.cc:156] Difference at 16385: -nan, expected 135.724
+E0304 10:48:22.680344   62846 buffer_comparator.cc:156] Difference at 16386: -nan, expected 129.249
+E0304 10:48:22.680350   62846 buffer_comparator.cc:156] Difference at 16387: -nan, expected 132.861
+E0304 10:48:22.680356   62846 buffer_comparator.cc:156] Difference at 16388: -nan, expected 128.309
+E0304 10:48:22.680362   62846 buffer_comparator.cc:156] Difference at 16389: -nan, expected 129.997
+E0304 10:48:22.680368   62846 buffer_comparator.cc:156] Difference at 16390: -nan, expected 136.896
+E0304 10:48:22.680374   62846 buffer_comparator.cc:156] Difference at 16391: -nan, expected 131.635
+E0304 10:48:22.680380   62846 buffer_comparator.cc:156] Difference at 16392: -nan, expected 134.506
+E0304 10:48:22.680385   62846 buffer_comparator.cc:156] Difference at 16393: -nan, expected 134.339
+2026-03-04 10:48:22.680394: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.715435   62846 buffer_comparator.cc:156] Difference at 16: 12362, expected 49360
+E0304 10:48:22.715458   62846 buffer_comparator.cc:156] Difference at 17: 12421.9, expected 49376.6
+E0304 10:48:22.715469   62846 buffer_comparator.cc:156] Difference at 18: 12322.2, expected 49263.7
+E0304 10:48:22.715475   62846 buffer_comparator.cc:156] Difference at 19: 12335.5, expected 49312.1
+E0304 10:48:22.715482   62846 buffer_comparator.cc:156] Difference at 20: 12328, expected 49166.9
+E0304 10:48:22.715489   62846 buffer_comparator.cc:156] Difference at 21: 12296.4, expected 49265.7
+E0304 10:48:22.715495   62846 buffer_comparator.cc:156] Difference at 22: 12294.9, expected 49318.9
+E0304 10:48:22.715502   62846 buffer_comparator.cc:156] Difference at 23: 12434.1, expected 49432.1
+E0304 10:48:22.715507   62846 buffer_comparator.cc:156] Difference at 24: 12333.9, expected 49309.8
+E0304 10:48:22.715514   62846 buffer_comparator.cc:156] Difference at 25: 12272.8, expected 49086.2
+2026-03-04 10:48:22.715523: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.728420   62846 buffer_comparator.cc:156] Difference at 16: 12362, expected 49360
+E0304 10:48:22.728441   62846 buffer_comparator.cc:156] Difference at 17: 12421.9, expected 49376.6
+E0304 10:48:22.728450   62846 buffer_comparator.cc:156] Difference at 18: 12322.2, expected 49263.7
+E0304 10:48:22.728456   62846 buffer_comparator.cc:156] Difference at 19: 12335.5, expected 49312.1
+E0304 10:48:22.728463   62846 buffer_comparator.cc:156] Difference at 20: 12328, expected 49166.9
+E0304 10:48:22.728470   62846 buffer_comparator.cc:156] Difference at 21: 12296.4, expected 49265.7
+E0304 10:48:22.728477   62846 buffer_comparator.cc:156] Difference at 22: 12294.9, expected 49318.9
+E0304 10:48:22.728483   62846 buffer_comparator.cc:156] Difference at 23: 12434.1, expected 49432.1
+E0304 10:48:22.728489   62846 buffer_comparator.cc:156] Difference at 24: 12333.9, expected 49309.8
+E0304 10:48:22.728495   62846 buffer_comparator.cc:156] Difference at 25: 12272.8, expected 49086.2
+2026-03-04 10:48:22.728504: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.735910   62846 buffer_comparator.cc:156] Difference at 32: 86338.1, expected 49355
+E0304 10:48:22.735932   62846 buffer_comparator.cc:156] Difference at 33: 86424.3, expected 49401.1
+E0304 10:48:22.735943   62846 buffer_comparator.cc:156] Difference at 34: 86813.3, expected 49615.5
+E0304 10:48:22.735950   62846 buffer_comparator.cc:156] Difference at 35: 86833.6, expected 49618
+E0304 10:48:22.735957   62846 buffer_comparator.cc:156] Difference at 36: 86100.7, expected 49212.5
+E0304 10:48:22.735964   62846 buffer_comparator.cc:156] Difference at 37: 86570.8, expected 49512.1
+E0304 10:48:22.735970   62846 buffer_comparator.cc:156] Difference at 38: 86025.3, expected 49171.2
+E0304 10:48:22.735977   62846 buffer_comparator.cc:156] Difference at 39: 86476.7, expected 49434.4
+E0304 10:48:22.735983   62846 buffer_comparator.cc:156] Difference at 40: 86269.9, expected 49321.5
+E0304 10:48:22.735990   62846 buffer_comparator.cc:156] Difference at 41: 86264.8, expected 49284.6
+2026-03-04 10:48:22.735999: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.746322   62846 buffer_comparator.cc:156] Difference at 48: 12368.6, expected 49520.7
+E0304 10:48:22.746344   62846 buffer_comparator.cc:156] Difference at 49: 12363.9, expected 49138.9
+E0304 10:48:22.746353   62846 buffer_comparator.cc:156] Difference at 50: 12382.9, expected 49416
+E0304 10:48:22.746360   62846 buffer_comparator.cc:156] Difference at 51: 12304.2, expected 49321.5
+E0304 10:48:22.746366   62846 buffer_comparator.cc:156] Difference at 52: 12396.7, expected 49358.8
+E0304 10:48:22.746373   62846 buffer_comparator.cc:156] Difference at 53: 12368, expected 49399.3
+E0304 10:48:22.746379   62846 buffer_comparator.cc:156] Difference at 54: 12377.6, expected 49434.9
+E0304 10:48:22.746385   62846 buffer_comparator.cc:156] Difference at 55: 12380.7, expected 49084.5
+E0304 10:48:22.746392   62846 buffer_comparator.cc:156] Difference at 56: 12416.2, expected 49299.7
+E0304 10:48:22.746398   62846 buffer_comparator.cc:156] Difference at 57: 12322.5, expected 49221.1
+2026-03-04 10:48:22.746411: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.793939   62846 buffer_comparator.cc:156] Difference at 16384: -nan, expected 126.48
+E0304 10:48:22.793961   62846 buffer_comparator.cc:156] Difference at 16385: -nan, expected 127.316
+E0304 10:48:22.793971   62846 buffer_comparator.cc:156] Difference at 16386: -nan, expected 120.215
+E0304 10:48:22.793977   62846 buffer_comparator.cc:156] Difference at 16387: -nan, expected 124.303
+E0304 10:48:22.793983   62846 buffer_comparator.cc:156] Difference at 16388: -nan, expected 118.124
+E0304 10:48:22.793990   62846 buffer_comparator.cc:156] Difference at 16389: -nan, expected 123.662
+E0304 10:48:22.793996   62846 buffer_comparator.cc:156] Difference at 16390: -nan, expected 130.253
+E0304 10:48:22.794001   62846 buffer_comparator.cc:156] Difference at 16391: -nan, expected 127.492
+E0304 10:48:22.794008   62846 buffer_comparator.cc:156] Difference at 16392: -nan, expected 123.828
+E0304 10:48:22.794013   62846 buffer_comparator.cc:156] Difference at 16393: -nan, expected 125.45
+2026-03-04 10:48:22.794022: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:22.841299   62846 buffer_comparator.cc:156] Difference at 16384: 61.2859, expected 132.723
+E0304 10:48:22.841322   62846 buffer_comparator.cc:156] Difference at 16385: 59.0635, expected 133.826
+E0304 10:48:22.841332   62846 buffer_comparator.cc:156] Difference at 16386: 63.3613, expected 142.088
+E0304 10:48:22.841339   62846 buffer_comparator.cc:156] Difference at 16387: 59.8187, expected 132.16
+E0304 10:48:22.841346   62846 buffer_comparator.cc:156] Difference at 16388: 60.0073, expected 134.784
+E0304 10:48:22.841352   62846 buffer_comparator.cc:156] Difference at 16389: 60.6082, expected 137.214
+E0304 10:48:22.841359   62846 buffer_comparator.cc:156] Difference at 16390: 63.7623, expected 132.066
+E0304 10:48:22.841365   62846 buffer_comparator.cc:156] Difference at 16391: 62.303, expected 137.267
+E0304 10:48:22.841371   62846 buffer_comparator.cc:156] Difference at 16392: 61.6528, expected 127.304
+E0304 10:48:22.841377   62846 buffer_comparator.cc:156] Difference at 16393: 61.8131, expected 137.949
+2026-03-04 10:48:22.841386: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:23.349616   62846 buffer_comparator.cc:156] Difference at 16384: -nan, expected 49095.7
+E0304 10:48:23.349712   62846 buffer_comparator.cc:156] Difference at 16385: -nan, expected 49191.3
+E0304 10:48:23.349765   62846 buffer_comparator.cc:156] Difference at 16386: -nan, expected 49137.8
+E0304 10:48:23.349817   62846 buffer_comparator.cc:156] Difference at 16387: -nan, expected 49180.6
+E0304 10:48:23.349865   62846 buffer_comparator.cc:156] Difference at 16388: -nan, expected 49081.7
+E0304 10:48:23.349920   62846 buffer_comparator.cc:156] Difference at 16389: -nan, expected 49090.7
+E0304 10:48:23.349969   62846 buffer_comparator.cc:156] Difference at 16390: -nan, expected 49329.3
+E0304 10:48:23.350016   62846 buffer_comparator.cc:156] Difference at 16391: -nan, expected 49467.9
+E0304 10:48:23.350070   62846 buffer_comparator.cc:156] Difference at 16392: -nan, expected 49273.9
+E0304 10:48:23.350117   62846 buffer_comparator.cc:156] Difference at 16393: -nan, expected 49389.7
+2026-03-04 10:48:23.350168: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:23.403045   62846 buffer_comparator.cc:156] Difference at 16384: 1.67069, expected 651.778
+E0304 10:48:23.403121   62846 buffer_comparator.cc:156] Difference at 16385: 2.59465, expected 651.274
+E0304 10:48:23.403183   62846 buffer_comparator.cc:156] Difference at 16386: 2.67764, expected 649.517
+E0304 10:48:23.403231   62846 buffer_comparator.cc:156] Difference at 16387: 1.73591, expected 650.554
+E0304 10:48:23.403284   62846 buffer_comparator.cc:156] Difference at 16388: 1.89221, expected 645.353
+E0304 10:48:23.403330   62846 buffer_comparator.cc:156] Difference at 16389: 1.93572, expected 646.424
+E0304 10:48:23.403372   62846 buffer_comparator.cc:156] Difference at 16390: 1.37299, expected 653.424
+E0304 10:48:23.403411   62846 buffer_comparator.cc:156] Difference at 16391: 2.65351, expected 652.391
+E0304 10:48:23.403458   62846 buffer_comparator.cc:156] Difference at 16392: 2.02229, expected 656.829
+E0304 10:48:23.403512   62846 buffer_comparator.cc:156] Difference at 16393: 1.56241, expected 651.442
+2026-03-04 10:48:23.403569: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:23.457510   62846 buffer_comparator.cc:156] Difference at 4096: -nan, expected 28.7887
+E0304 10:48:23.457580   62846 buffer_comparator.cc:156] Difference at 4097: -nan, expected 29.1043
+E0304 10:48:23.457625   62846 buffer_comparator.cc:156] Difference at 4098: -nan, expected 28.0456
+E0304 10:48:23.457667   62846 buffer_comparator.cc:156] Difference at 4099: -nan, expected 27.8246
+E0304 10:48:23.457724   62846 buffer_comparator.cc:156] Difference at 4100: -nan, expected 27.9632
+E0304 10:48:23.457764   62846 buffer_comparator.cc:156] Difference at 4101: -nan, expected 28.9772
+E0304 10:48:23.457804   62846 buffer_comparator.cc:156] Difference at 4102: -nan, expected 29.6029
+E0304 10:48:23.457857   62846 buffer_comparator.cc:156] Difference at 4103: -nan, expected 28.7112
+E0304 10:48:23.457898   62846 buffer_comparator.cc:156] Difference at 4104: -nan, expected 28.6837
+E0304 10:48:23.457938   62846 buffer_comparator.cc:156] Difference at 4105: -nan, expected 29.2336
+2026-03-04 10:48:23.457981: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:23.535140   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 49113.7
+E0304 10:48:23.535226   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 49181.4
+E0304 10:48:23.535273   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 49426.2
+E0304 10:48:23.535329   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 49175
+E0304 10:48:23.535380   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 49165
+E0304 10:48:23.535426   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 49167.9
+E0304 10:48:23.535468   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 49055.8
+E0304 10:48:23.535522   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 49352.5
+E0304 10:48:23.535565   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 49501
+E0304 10:48:23.535608   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 49190.5
+2026-03-04 10:48:23.535664: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:23.708481   62846 buffer_comparator.cc:156] Difference at 49152: 1.83, expected 662.652
+E0304 10:48:23.708532   62846 buffer_comparator.cc:156] Difference at 49153: 1.41223, expected 663.644
+E0304 10:48:23.708542   62846 buffer_comparator.cc:156] Difference at 49154: 1.76387, expected 650.339
+E0304 10:48:23.708548   62846 buffer_comparator.cc:156] Difference at 49155: 2.60921, expected 658.176
+E0304 10:48:23.708554   62846 buffer_comparator.cc:156] Difference at 49156: 2.16077, expected 660.116
+E0304 10:48:23.708560   62846 buffer_comparator.cc:156] Difference at 49157: 2.02761, expected 661.494
+E0304 10:48:23.708566   62846 buffer_comparator.cc:156] Difference at 49158: 1.93496, expected 652.935
+E0304 10:48:23.708573   62846 buffer_comparator.cc:156] Difference at 49159: 2.0711, expected 654.027
+E0304 10:48:23.708579   62846 buffer_comparator.cc:156] Difference at 49160: 1.01108, expected 664.178
+E0304 10:48:23.708584   62846 buffer_comparator.cc:156] Difference at 49161: 2.46453, expected 659.432
+2026-03-04 10:48:23.708593: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:23.890772   62846 buffer_comparator.cc:156] Difference at 16384: -nan, expected 132.435
+E0304 10:48:23.890795   62846 buffer_comparator.cc:156] Difference at 16385: -nan, expected 135.724
+E0304 10:48:23.890805   62846 buffer_comparator.cc:156] Difference at 16386: -nan, expected 129.249
+E0304 10:48:23.890811   62846 buffer_comparator.cc:156] Difference at 16387: -nan, expected 132.861
+E0304 10:48:23.890817   62846 buffer_comparator.cc:156] Difference at 16388: -nan, expected 128.309
+E0304 10:48:23.890823   62846 buffer_comparator.cc:156] Difference at 16389: -nan, expected 129.997
+E0304 10:48:23.890829   62846 buffer_comparator.cc:156] Difference at 16390: -nan, expected 136.896
+E0304 10:48:23.890834   62846 buffer_comparator.cc:156] Difference at 16391: -nan, expected 131.635
+E0304 10:48:23.890840   62846 buffer_comparator.cc:156] Difference at 16392: -nan, expected 134.506
+E0304 10:48:23.890846   62846 buffer_comparator.cc:156] Difference at 16393: -nan, expected 134.339
+2026-03-04 10:48:23.890854: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:23.953610   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 16376
+E0304 10:48:23.953686   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 16395.9
+E0304 10:48:23.953737   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 16434.7
+E0304 10:48:23.953788   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 16510.8
+E0304 10:48:23.953836   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 16442.5
+E0304 10:48:23.953882   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 16435.9
+E0304 10:48:23.953942   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 16484.1
+E0304 10:48:23.953991   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 16367
+E0304 10:48:23.954035   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 16532.9
+E0304 10:48:23.954082   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 16464.9
+2026-03-04 10:48:23.954141: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:24.145915   62846 buffer_comparator.cc:156] Difference at 4096: -nan, expected 28.6159
+E0304 10:48:24.145985   62846 buffer_comparator.cc:156] Difference at 4097: -nan, expected 29.4663
+E0304 10:48:24.146038   62846 buffer_comparator.cc:156] Difference at 4098: -nan, expected 28.6724
+E0304 10:48:24.146087   62846 buffer_comparator.cc:156] Difference at 4099: -nan, expected 28.5035
+E0304 10:48:24.146133   62846 buffer_comparator.cc:156] Difference at 4100: -nan, expected 28.0959
+E0304 10:48:24.146177   62846 buffer_comparator.cc:156] Difference at 4101: -nan, expected 28.5744
+E0304 10:48:24.146234   62846 buffer_comparator.cc:156] Difference at 4102: -nan, expected 28.3735
+E0304 10:48:24.146278   62846 buffer_comparator.cc:156] Difference at 4103: -nan, expected 28.7387
+E0304 10:48:24.146333   62846 buffer_comparator.cc:156] Difference at 4104: -nan, expected 29.7745
+E0304 10:48:24.146378   62846 buffer_comparator.cc:156] Difference at 4105: -nan, expected 30.007
+2026-03-04 10:48:24.146435: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:24.557081   62846 buffer_comparator.cc:156] Difference at 16384: -nan, expected 25862.3
+E0304 10:48:24.557187   62846 buffer_comparator.cc:156] Difference at 16385: -nan, expected 25950.6
+E0304 10:48:24.557243   62846 buffer_comparator.cc:156] Difference at 16386: -nan, expected 25759.8
+E0304 10:48:24.557294   62846 buffer_comparator.cc:156] Difference at 16387: -nan, expected 25827.6
+E0304 10:48:24.557345   62846 buffer_comparator.cc:156] Difference at 16388: -nan, expected 25753.9
+E0304 10:48:24.557395   62846 buffer_comparator.cc:156] Difference at 16389: -nan, expected 25660.9
+E0304 10:48:24.557444   62846 buffer_comparator.cc:156] Difference at 16390: -nan, expected 25917.8
+E0304 10:48:24.557494   62846 buffer_comparator.cc:156] Difference at 16391: -nan, expected 25754.4
+E0304 10:48:24.557544   62846 buffer_comparator.cc:156] Difference at 16392: -nan, expected 25757.3
+E0304 10:48:24.557593   62846 buffer_comparator.cc:156] Difference at 16393: -nan, expected 25894.4
+2026-03-04 10:48:24.557648: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:24.879881   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 646.486
+E0304 10:48:24.879970   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 653.933
+E0304 10:48:24.880026   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 648.276
+E0304 10:48:24.880079   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 650.239
+E0304 10:48:24.880128   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 643.083
+E0304 10:48:24.880177   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 651.109
+E0304 10:48:24.880226   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 646.368
+E0304 10:48:24.880274   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 646.693
+E0304 10:48:24.880324   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 643.414
+E0304 10:48:24.880372   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 647.978
+2026-03-04 10:48:24.880422: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:24.965147   62846 buffer_comparator.cc:156] Difference at 49152: 1.14102, expected 134.129
+E0304 10:48:24.965166   62846 buffer_comparator.cc:156] Difference at 49153: 0.933796, expected 133.374
+E0304 10:48:24.965177   62846 buffer_comparator.cc:156] Difference at 49154: 0.710338, expected 138.869
+E0304 10:48:24.965183   62846 buffer_comparator.cc:156] Difference at 49155: 0.938888, expected 135.894
+E0304 10:48:24.965189   62846 buffer_comparator.cc:156] Difference at 49156: 0.774155, expected 133.679
+E0304 10:48:24.965195   62846 buffer_comparator.cc:156] Difference at 49157: 1.37151, expected 138.25
+E0304 10:48:24.965201   62846 buffer_comparator.cc:156] Difference at 49158: 1.03922, expected 138.163
+E0304 10:48:24.965208   62846 buffer_comparator.cc:156] Difference at 49159: 1.76571, expected 134.277
+E0304 10:48:24.965214   62846 buffer_comparator.cc:156] Difference at 49160: 1.23716, expected 135.524
+E0304 10:48:24.965220   62846 buffer_comparator.cc:156] Difference at 49161: 0.833363, expected 133.842
+2026-03-04 10:48:24.965229: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:24.985427   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 643.371
+E0304 10:48:24.985449   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 645.684
+E0304 10:48:24.985459   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 641.16
+E0304 10:48:24.985465   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 642.212
+E0304 10:48:24.985471   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 641.546
+E0304 10:48:24.985477   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 630.826
+E0304 10:48:24.985483   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 638.474
+E0304 10:48:24.985489   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 630.512
+E0304 10:48:24.985495   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 628.525
+E0304 10:48:24.985501   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 636.372
+2026-03-04 10:48:24.985509: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:25.006430   62846 buffer_comparator.cc:156] Difference at 16384: 973.905, expected 652.154
+E0304 10:48:25.006452   62846 buffer_comparator.cc:156] Difference at 16385: 991.383, expected 662.399
+E0304 10:48:25.006462   62846 buffer_comparator.cc:156] Difference at 16386: 983.46, expected 650.273
+E0304 10:48:25.006469   62846 buffer_comparator.cc:156] Difference at 16387: 986.619, expected 657.574
+E0304 10:48:25.006475   62846 buffer_comparator.cc:156] Difference at 16388: 992.722, expected 659.087
+E0304 10:48:25.006481   62846 buffer_comparator.cc:156] Difference at 16389: 985.78, expected 656.008
+E0304 10:48:25.006487   62846 buffer_comparator.cc:156] Difference at 16390: 986.285, expected 654.267
+E0304 10:48:25.006494   62846 buffer_comparator.cc:156] Difference at 16391: 987.755, expected 657.397
+E0304 10:48:25.006500   62846 buffer_comparator.cc:156] Difference at 16392: 982.495, expected 653.438
+E0304 10:48:25.006506   62846 buffer_comparator.cc:156] Difference at 16393: 978.833, expected 653.788
+2026-03-04 10:48:25.006515: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:25.065816   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 25795.7
+E0304 10:48:25.065903   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 25780.3
+E0304 10:48:25.065958   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 25857.8
+E0304 10:48:25.066007   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 25767.6
+E0304 10:48:25.066055   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 25851.1
+E0304 10:48:25.066101   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 25965.5
+E0304 10:48:25.066147   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 25762.6
+E0304 10:48:25.066194   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 25936.3
+E0304 10:48:25.066257   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 25724.8
+E0304 10:48:25.066305   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 25841.3
+2026-03-04 10:48:25.066353: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:25.161230   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 658.936
+E0304 10:48:25.161304   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 658.261
+E0304 10:48:25.161353   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 654.721
+E0304 10:48:25.161407   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 652.973
+E0304 10:48:25.161454   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 656.92
+E0304 10:48:25.161513   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 645.113
+E0304 10:48:25.161558   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 651.435
+E0304 10:48:25.161602   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 651.269
+E0304 10:48:25.161645   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 654.15
+E0304 10:48:25.161689   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 647.838
+2026-03-04 10:48:25.161735: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:25.241309   62846 buffer_comparator.cc:156] Difference at 32768: 1.20895, expected 132.723
+E0304 10:48:25.241376   62846 buffer_comparator.cc:156] Difference at 32769: 1.08141, expected 133.826
+E0304 10:48:25.241427   62846 buffer_comparator.cc:156] Difference at 32770: 0.729221, expected 142.088
+E0304 10:48:25.241475   62846 buffer_comparator.cc:156] Difference at 32771: 0.456504, expected 132.16
+E0304 10:48:25.241522   62846 buffer_comparator.cc:156] Difference at 32772: 0.618823, expected 134.784
+E0304 10:48:25.241567   62846 buffer_comparator.cc:156] Difference at 32773: 1.6784, expected 137.214
+E0304 10:48:25.241611   62846 buffer_comparator.cc:156] Difference at 32774: 1.5497, expected 132.066
+E0304 10:48:25.241654   62846 buffer_comparator.cc:156] Difference at 32775: 0.942276, expected 137.267
+E0304 10:48:25.241699   62846 buffer_comparator.cc:156] Difference at 32776: 0.768842, expected 127.304
+E0304 10:48:25.241754   62846 buffer_comparator.cc:156] Difference at 32777: 0.914099, expected 137.949
+2026-03-04 10:48:25.241802: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:25.480524   62846 buffer_comparator.cc:156] Difference at 65536: 1.62346, expected 647.649
+E0304 10:48:25.480545   62846 buffer_comparator.cc:156] Difference at 65537: 0.806163, expected 635.348
+E0304 10:48:25.480555   62846 buffer_comparator.cc:156] Difference at 65538: 2.34903, expected 650.785
+E0304 10:48:25.480562   62846 buffer_comparator.cc:156] Difference at 65539: 2.4581, expected 658.008
+E0304 10:48:25.480568   62846 buffer_comparator.cc:156] Difference at 65540: 2.36293, expected 645.995
+E0304 10:48:25.480574   62846 buffer_comparator.cc:156] Difference at 65541: 2.15024, expected 645.478
+E0304 10:48:25.480580   62846 buffer_comparator.cc:156] Difference at 65542: 1.19848, expected 650.085
+E0304 10:48:25.480586   62846 buffer_comparator.cc:156] Difference at 65543: 1.7399, expected 654.756
+E0304 10:48:25.480592   62846 buffer_comparator.cc:156] Difference at 65544: 2.60601, expected 639.336
+E0304 10:48:25.480599   62846 buffer_comparator.cc:156] Difference at 65545: 1.98512, expected 651.454
+2026-03-04 10:48:25.480607: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:25.529831   62846 buffer_comparator.cc:156] Difference at 16384: 1611.97, expected 64.3462
+E0304 10:48:25.529855   62846 buffer_comparator.cc:156] Difference at 16385: 1619.99, expected 64.8903
+E0304 10:48:25.529865   62846 buffer_comparator.cc:156] Difference at 16386: 1629.17, expected 63.2858
+E0304 10:48:25.529871   62846 buffer_comparator.cc:156] Difference at 16387: 1619.57, expected 64.9235
+E0304 10:48:25.529877   62846 buffer_comparator.cc:156] Difference at 16388: 1622.54, expected 65.3138
+E0304 10:48:25.529884   62846 buffer_comparator.cc:156] Difference at 16389: 1605.42, expected 65.1382
+E0304 10:48:25.529891   62846 buffer_comparator.cc:156] Difference at 16390: 1610.42, expected 61.4578
+E0304 10:48:25.529898   62846 buffer_comparator.cc:156] Difference at 16391: 1626.61, expected 66.6329
+E0304 10:48:25.529904   62846 buffer_comparator.cc:156] Difference at 16392: 1631.76, expected 66.0351
+E0304 10:48:25.529911   62846 buffer_comparator.cc:156] Difference at 16393: 1623.99, expected 66.6559
+2026-03-04 10:48:25.529920: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:26.313311   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 49113.7
+E0304 10:48:26.313422   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 49181.4
+E0304 10:48:26.313480   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 49426.2
+E0304 10:48:26.313537   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 49175
+E0304 10:48:26.313587   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 49165
+E0304 10:48:26.313636   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 49167.9
+E0304 10:48:26.313687   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 49055.8
+E0304 10:48:26.313736   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 49352.5
+E0304 10:48:26.313786   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 49501
+E0304 10:48:26.313837   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 49190.5
+2026-03-04 10:48:26.313891: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:26.456984   62846 buffer_comparator.cc:156] Difference at 32: 0.470445, expected 639.688
+E0304 10:48:26.457067   62846 buffer_comparator.cc:156] Difference at 33: 1.11963, expected 637.915
+E0304 10:48:26.457126   62846 buffer_comparator.cc:156] Difference at 34: 1.35021, expected 643.17
+E0304 10:48:26.457180   62846 buffer_comparator.cc:156] Difference at 35: 0.378945, expected 637.168
+E0304 10:48:26.457232   62846 buffer_comparator.cc:156] Difference at 36: 1.39806, expected 640.191
+E0304 10:48:26.457296   62846 buffer_comparator.cc:156] Difference at 37: 0.867637, expected 642.17
+E0304 10:48:26.457346   62846 buffer_comparator.cc:156] Difference at 38: 1.18687, expected 642.63
+E0304 10:48:26.457391   62846 buffer_comparator.cc:156] Difference at 39: 0.73605, expected 633.564
+E0304 10:48:26.457438   62846 buffer_comparator.cc:156] Difference at 40: 1.14903, expected 646.533
+E0304 10:48:26.457483   62846 buffer_comparator.cc:156] Difference at 41: 1.20136, expected 634.978
+2026-03-04 10:48:26.457532: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:26.540068   62846 buffer_comparator.cc:156] Difference at 32: -nan, expected 25795.7
+E0304 10:48:26.540149   62846 buffer_comparator.cc:156] Difference at 33: -nan, expected 25780.3
+E0304 10:48:26.540199   62846 buffer_comparator.cc:156] Difference at 34: -nan, expected 25857.8
+E0304 10:48:26.540250   62846 buffer_comparator.cc:156] Difference at 35: -nan, expected 25767.6
+E0304 10:48:26.540300   62846 buffer_comparator.cc:156] Difference at 36: -nan, expected 25851
+E0304 10:48:26.540368   62846 buffer_comparator.cc:156] Difference at 37: -nan, expected 25965.6
+E0304 10:48:26.540417   62846 buffer_comparator.cc:156] Difference at 38: -nan, expected 25762.6
+E0304 10:48:26.540464   62846 buffer_comparator.cc:156] Difference at 39: -nan, expected 25936.3
+E0304 10:48:26.540510   62846 buffer_comparator.cc:156] Difference at 40: -nan, expected 25724.8
+E0304 10:48:26.540572   62846 buffer_comparator.cc:156] Difference at 41: -nan, expected 25841.3
+2026-03-04 10:48:26.540621: E external/xla/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc:1080] Results do not match the reference. This is likely a bug/unexpected loss of precision.
+E0304 10:48:39.557657   62846 buffer_comparator.cc:156] Difference at 76677312: 0, expected 131.723
+E0304 10:48:39.557713   62846 buffer_comparator.cc:156] Difference at 76677313: 0, expected 127.891
+E0304 10:48:39.557736   62846 buffer_comparator.cc:156] Difference at 76677314: 0, expected 124.891
+E0304 10:48:39.557742   62846 buffer_comparator.cc:156] Difference at 76677315: 0, expected 131.797
+E0304 10:48:39.557748   62846 buffer_comparator.cc:156] Difference at 76677316: 0, expected 127.365
+E0304 10:48:39.557753   62846 buffer_comparator.cc:156] Difference at 76677317: 0, expected 127.037
+E0304 10:48:39.557759   62846 buffer_comparator.cc:156] Difference at 76677318: 0, expected 130.809
+E0304 10:48:39.557765   62846 buffer_comparator.cc:156] Difference at 76677319: 0, expected 128.69
+E0304 10:48:39.557770   62846 buffer_comparator.cc:156] Difference at 76677320: 0, expected 127.125
+E0304 10:48:39.557776   62846 buffer_comparator.cc:156] Difference at 76677321: 0, expected 132.043
+2026-03-04 10:48:39.614758: E external/xla/xla/service/gpu/autotuning/gemm_algorithm_picker.cc:358] Results mismatch between different GEMM algorithms. This is likely a bug/unexpected loss of precision.
+E0304 10:48:43.509155   62846 buffer_comparator.cc:156] Difference at 76677248: 108.377, expected 133.997
+E0304 10:48:43.509212   62846 buffer_comparator.cc:156] Difference at 76677249: 107.068, expected 133.361
+E0304 10:48:43.509234   62846 buffer_comparator.cc:156] Difference at 76677250: 106.503, expected 131.593
+E0304 10:48:43.509241   62846 buffer_comparator.cc:156] Difference at 76677251: 105.164, expected 129.226
+E0304 10:48:43.509246   62846 buffer_comparator.cc:156] Difference at 76677252: 102.276, expected 126.199
+E0304 10:48:43.509252   62846 buffer_comparator.cc:156] Difference at 76677253: 108.077, expected 134.771
+E0304 10:48:43.509258   62846 buffer_comparator.cc:156] Difference at 76677254: 102.853, expected 126.557
+E0304 10:48:43.509264   62846 buffer_comparator.cc:156] Difference at 76677255: 97.9488, expected 122.924
+E0304 10:48:43.509270   62846 buffer_comparator.cc:156] Difference at 76677256: 104.531, expected 129.105
+E0304 10:48:43.509275   62846 buffer_comparator.cc:156] Difference at 76677257: 101.688, expected 127.742
+2026-03-04 10:48:43.565898: E external/xla/xla/service/gpu/autotuning/gemm_algorithm_picker.cc:358] Results mismatch between different GEMM algorithms. This is likely a bug/unexpected loss of precision.
+E0304 10:48:55.237141   62846 buffer_comparator.cc:156] Difference at 230031936: 0, expected 128.349
+E0304 10:48:55.237203   62846 buffer_comparator.cc:156] Difference at 230031937: 0, expected 131.563
+E0304 10:48:55.237227   62846 buffer_comparator.cc:156] Difference at 230031938: 0, expected 139.229
+E0304 10:48:55.237233   62846 buffer_comparator.cc:156] Difference at 230031939: 0, expected 130.514
+E0304 10:48:55.237238   62846 buffer_comparator.cc:156] Difference at 230031940: 0, expected 132.287
+E0304 10:48:55.237244   62846 buffer_comparator.cc:156] Difference at 230031941: 0, expected 132.907
+E0304 10:48:55.237250   62846 buffer_comparator.cc:156] Difference at 230031942: 0, expected 132.548
+E0304 10:48:55.237255   62846 buffer_comparator.cc:156] Difference at 230031943: 0, expected 132.399
+E0304 10:48:55.237261   62846 buffer_comparator.cc:156] Difference at 230031944: 0, expected 126.786
+E0304 10:48:55.237267   62846 buffer_comparator.cc:156] Difference at 230031945: 0, expected 136.56
+2026-03-04 10:48:55.399719: E external/xla/xla/service/gpu/autotuning/gemm_algorithm_picker.cc:358] Results mismatch between different GEMM algorithms. This is likely a bug/unexpected loss of precision.
+E0304 10:49:02.970398   62846 buffer_comparator.cc:156] Difference at 230031744: 108.104, expected 134.75
+E0304 10:49:02.970462   62846 buffer_comparator.cc:156] Difference at 230031745: 105.885, expected 131.254
+E0304 10:49:02.970485   62846 buffer_comparator.cc:156] Difference at 230031746: 103.594, expected 131.849
+E0304 10:49:02.970491   62846 buffer_comparator.cc:156] Difference at 230031747: 103.048, expected 128.14
+E0304 10:49:02.970496   62846 buffer_comparator.cc:156] Difference at 230031748: 103.838, expected 131.274
+E0304 10:49:02.970502   62846 buffer_comparator.cc:156] Difference at 230031749: 103.17, expected 126.714
+E0304 10:49:02.970508   62846 buffer_comparator.cc:156] Difference at 230031750: 101.188, expected 125.971
+E0304 10:49:02.970514   62846 buffer_comparator.cc:156] Difference at 230031751: 100.315, expected 126.606
+E0304 10:49:02.970519   62846 buffer_comparator.cc:156] Difference at 230031752: 102.416, expected 128.179
+E0304 10:49:02.970525   62846 buffer_comparator.cc:156] Difference at 230031753: 107.702, expected 135.767
+2026-03-04 10:49:03.133341: E external/xla/xla/service/gpu/autotuning/gemm_algorithm_picker.cc:358] Results mismatch between different GEMM algorithms. This is likely a bug/unexpected loss of precision.
