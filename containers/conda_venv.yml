@@ -34,3 +34,9 @@ dependencies:
     - jraph
     - pytough
     - xarray-tensorstore
+
+# Added cmcrameri cartopy 
+# Added jupyterlab
+# Added cdsapi 
+# Added netcdf4 cfgrib
+# Added gcsfs
