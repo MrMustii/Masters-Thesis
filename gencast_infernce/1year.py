@@ -8,6 +8,10 @@ import jax
 import sys
 import os
 import pandas as pd
+import argparse
+from datatest import prepare_data, download_data, SCRATCH_PATH
+import datetime
+
 sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
 
 from google.cloud import storage
@@ -19,179 +23,42 @@ from graphcast import data_utils
 from graphcast import gencast
 from graphcast import nan_cleaning
 from ploting import plot_map
+jax.config.update("jax_default_matmul_precision", "highest")
+# jax.config.update("jax_debug_nans", True)
+
 print("Imports done.")
 print(f"Import time: {time.time()-t0:.1f}s")
 print(jax.devices())
 
 
-OUT_DIR = "/project/project_465002687/Masters-Thesis/gencast_infernce/predictions/"
-NUM_ENSEMBLE = 1
-os.makedirs(OUT_DIR, exist_ok=True)
 # SCRATCH_PATH =  "../../../scratch/project_465002687/data/era5/wb2_2022_subset.zarr"
 # SCRATCH_PATH = "../../../scratch/project_465002687/data/era5/wb2_2022_week1_subset.zarr"
-SCRATCH_PATH = "../../../scratch/project_465002687/data/era5/wb2_2021-12-30_2023-01-01_12h_1deg.zarr"
-def prepare_data(location, time_slice=slice("2019-03-28T12:00", "2019-03-30T00:00:00")):
-    wb2 = xarray.open_zarr(location)
-    wb2 = wb2.sel(time=wb2.time.dt.hour.isin([0, 12]))
-    wb2 = wb2.sel(time=time_slice)
-    wb2 = wb2.sel(level=[50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000])
-    wb2 = wb2[["2m_temperature", "mean_sea_level_pressure", "10m_u_component_of_wind",
-            "10m_v_component_of_wind", "sea_surface_temperature", "total_precipitation_12hr",
-            "geopotential_at_surface", "land_sea_mask", "geopotential", "specific_humidity",
-            "temperature", "u_component_of_wind", "v_component_of_wind", "vertical_velocity"]]
-    if "latitude" in wb2.dims and "longitude" in wb2.dims:
-        wb2 = wb2.rename({"latitude": "lat", "longitude": "lon"})
-    wb2 = wb2.isel(lat=slice(None, None, 4), lon=slice(None, None, 4))    
-    wb2 = wb2.sortby("lat") 
-    return wb2
+# SCRATCH_PATH = "../../../scratch/project_465002687/data/era5/wb2_2021-12-30_2023-01-01_12h_1deg.zarr"
 
 
 
-print("Loading model...")
-t0 = time.time()
-gcs_client = storage.Client.create_anonymous_client()
-gcs_bucket = gcs_client.get_bucket("dm_graphcast")
-dir_prefix = "gencast/"
-
-avalible_models = [
-    name for blob in gcs_bucket.list_blobs(prefix=(dir_prefix + "params/"))
-    if (name := blob.name.removeprefix(dir_prefix + "params/"))
-]
-model_selected = [f for f in avalible_models if "Mini" in f][0]
-with gcs_bucket.blob(dir_prefix + f"params/{model_selected}").open("rb") as f:
-    ckpt = checkpoint.load(f, gencast.CheckPoint)
-params = ckpt.params
-task_config = ckpt.task_config
-sampler_config = ckpt.sampler_config
-noise_config = ckpt.noise_config
-noise_encoder_config = ckpt.noise_encoder_config
-denoiser_architecture_config = ckpt.denoiser_architecture_config
-denoiser_architecture_config.sparse_transformer_config.attention_type = "triblockdiag_mha"
-denoiser_architecture_config.sparse_transformer_config.mask_type = "full"
-print(f"Model loaded in {time.time()-t0:.1f}s | {model_selected}")
-
-print("Loading normalization stats...")
-t0 = time.time()
-with gcs_bucket.blob(dir_prefix + "stats/diffs_stddev_by_level.nc").open("rb") as f:
-    diffs_stddev_by_level = xarray.load_dataset(f).compute()
-with gcs_bucket.blob(dir_prefix + "stats/mean_by_level.nc").open("rb") as f:
-    mean_by_level = xarray.load_dataset(f).compute()
-with gcs_bucket.blob(dir_prefix + "stats/stddev_by_level.nc").open("rb") as f:
-    stddev_by_level = xarray.load_dataset(f).compute()
-with gcs_bucket.blob(dir_prefix + "stats/min_by_level.nc").open("rb") as f:
-    min_by_level = xarray.load_dataset(f).compute()
-print(f"Stats loaded in {time.time()-t0:.1f}s")
-
-
-# INPUT: None (uses global configurations and loaded statistics).
-# OUTPUT: A configured Haiku model object wrapped with normalization and NaN-handling layers.
-def construct_wrapped_gencast():
-    predictor = gencast.GenCast(
-        sampler_config=sampler_config,
-        task_config=task_config,
-        denoiser_architecture_config=denoiser_architecture_config,
-        noise_config=noise_config,
-        noise_encoder_config=noise_encoder_config,
-    )
-    predictor = normalization.InputsAndResiduals(
-        predictor,
-        diffs_stddev_by_level=diffs_stddev_by_level,
-        mean_by_level=mean_by_level,
-        stddev_by_level=stddev_by_level,
-    )
-    predictor = nan_cleaning.NaNCleaner(
-        predictor=predictor,
-        reintroduce_nans=True,
-        fill_value=min_by_level,
-        var_to_clean="sea_surface_temperature",
-    )
-    return predictor
-
-# INPUT: 'inputs' (historical weather data), 'targets_template' (empty arrays defining the prediction shape), and 'forcings' (known future variables like solar radiation).
-# OUTPUT: A tuple containing the raw model prediction arrays and an empty Haiku state dictionary.
-@hk.transform_with_state
-def run_forward(inputs, targets_template, forcings):
-    predictor = construct_wrapped_gencast()
-    return predictor(inputs, targets_template=targets_template, forcings=forcings)
-
-# INPUT: 'rng' (random seed for the diffusion process), alongside the 'inputs', 'targets_template', and 'forcings' arrays.
-# OUTPUT: The compiled and parallelized prediction arrays, with the empty state dictionary explicitly discarded.
-state = {}
-run_forward_jitted = jax.jit(
-    lambda rng, i, t, f: run_forward.apply(params, state, rng, i, t, f)[0]
-)
-run_forward_pmap = xarray_jax.pmap(run_forward_jitted, dim="sample")
-
-print("Model built.")
 ###########################################################################
-print("Loading data ...")
-wb2 = xarray.open_zarr(SCRATCH_PATH)
-# wb2 = wb2.sel(time=wb2.time.dt.hour.isin([0, 12]))
 
-print("Data loaded.")
 print("Running inference ...")
-rng = jax.random.PRNGKey(0)
-rngs = np.stack([jax.random.fold_in(rng, i) for i in range(NUM_ENSEMBLE)], axis=0)
-wb2 = wb2.assign_coords(datetime=wb2.time)
-data_utils.add_derived_vars(wb2)
-data_utils.add_tisr_var(wb2)
-first_time = wb2.time[0]    
-wb2 = wb2.assign_coords(time=(wb2.time - wb2.time[0]).astype("timedelta64[ns]"))
-
-for i in range(wb2.sizes["time"] // 2 - 1):
-    w_eval_inputs, w_eval_targets, w_eval_forcings = data_utils.extract_inputs_targets_forcings(
-        wb2, target_lead_times=slice(f"{12*(i+1)}h", f"{12*(i+1)}h"), **dataclasses.asdict(task_config)
-    )
-    w_eval_inputs = w_eval_inputs.expand_dims(batch=1).compute()
-    w_eval_targets = w_eval_targets.expand_dims(batch=1).compute()
-    w_eval_forcings = w_eval_forcings.expand_dims(batch=1).compute()
-
-    w_chunks = []
-    for chunk in rollout.chunked_prediction_generator_multiple_runs(
-        predictor_fn=run_forward_pmap,
-            rngs=rngs,
-            inputs=w_eval_inputs,
-            targets_template=w_eval_targets * np.nan,
-            forcings=w_eval_forcings,
-            num_steps_per_chunk=1,
-            num_samples=1,
-            pmap_devices=jax.local_devices()
-    ):
-        w_chunks.append(chunk)
-    prediction = xarray.combine_by_coords(w_chunks)
-    prediction = prediction.assign_coords(lon=(((prediction.lon + 180) % 360) - 180)).sortby(["lat", "lon"])
-    prediction_region = prediction[["2m_temperature"]].sel(lat=slice(45.0, 65.0), lon=slice(-5.0, 25.0))
-
-    out_path = os.path.join(OUT_DIR, "predictions_1year_region.zarr")
-    if i == 0:
-        # convert time from timedelta back to absolute time for the first chunk, then append subsequent chunks using the same time coordinate
-        prediction_region = prediction_region.assign_coords(time=first_time + prediction_region.time.astype("timedelta64[ns]"))
-        prediction_region.to_zarr(out_path, mode="w")
-    else:
-        prediction_region = prediction_region.assign_coords(time=first_time + prediction_region.time.astype("timedelta64[ns]"))
-        prediction_region.to_zarr(out_path, mode="a", append_dim="time")
-    print(f"Predictions saved to {out_path}")
-
 
 ################################################### Everything abouve this is correct
 
 
-def sanity_check_predictions():
+def sanity_check_predictions(model="mini"):
     # load google data and weatherbench2 data for the same time period and compare them before and after runing the model
-    print("SANITY CHECKS ON FINAL PREDICTIONS:")
+    print("-------------- SANITY CHECKS ON FINAL PREDICTIONS: --------------")
     gcs_client = storage.Client.create_anonymous_client()
     gcs_bucket = gcs_client.get_bucket("dm_graphcast")
     dir_prefix = "gencast/"
-    dataset_file = "source-era5_date-2019-03-29_res-1.0_levels-13_steps-01.nc"
+    degree = 0.25 if "0.25" in model else 1
+    dataset_file = "source-era5_date-2019-03-29_res-1.0_levels-13_steps-01.nc" if degree== 1 else "source-era5_date-2019-03-29_res-0.25_levels-13_steps-01.nc"
     with gcs_bucket.blob(dir_prefix + f"dataset/{dataset_file}").open("rb") as f:
         google = xarray.load_dataset(f)
     print("=== Loaded Google sample batch ===")
 
 
     print("=== LoadedWeatherBench2 ERA5 (processed) ===")
-    time_slice = slice("2022-01-01T00:00:00", "2022-01-08T00:00:00")
-
-    wb2 = prepare_data("gs://weatherbench2/datasets/era5/1959-2023_01_10-wb13-6h-1440x721_with_derived_variables.zarr")
+    wb2 = prepare_data("gs://weatherbench2/datasets/era5/1959-2023_01_10-wb13-6h-1440x721_with_derived_variables.zarr", deg=degree)
     wb2 = wb2.sel(time=slice("2019-03-29T00:00:00", "2019-03-30T00:00:00"))
 
     print("Check if datasets are the same")
@@ -216,6 +83,11 @@ def sanity_check_predictions():
     wb2_vars = set(wb2.data_vars)
     print(f"In Google but not WB2: {google_vars - wb2_vars}")
     print(f"In WB2 but not Google: {wb2_vars - google_vars}")
+    print("=== check for nans ===")
+    for var in wb2.data_vars:
+        num_nans_wb2 = wb2[var].isnull().sum().compute().item()
+        num_nans_google = google[var].isnull().sum().compute().item()
+        print(f"Variable '{var}' has {num_nans_wb2} NaNs in WB2 data and {num_nans_google} NaNs in Google data.")
 
 
     print("\n=== 10 POINT DATA VALUE COMPARISON ===")
@@ -300,5 +172,210 @@ def sanity_check_predictions():
         w_val = w_pred[var].isel(batch=0, sample=0, time=0, lat=lat_idx, lon=lon_idx).values.item()
         
         print(f"Pred Point {i+1} (lat_idx={lat_idx}, lon_idx={lon_idx}): Google={g_val:.4f}, WB2={w_val:.4f}, Diff={abs(g_val - w_val):.4f}")
+    print(f"---------------- Sanity checks on predictions completed. ----------------")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str, default="mini", choices=["mini", "1","0.25","0.25_operational"], help='which model checkpoint to use for inference (Choices: %(choices)s)')
+    parser.add_argument('--sanity-check', action='store_true', help='whether to run sanity checks comparing google data and predictions to weatherbench2 data')
+    parser.add_argument('--start-date', type=str, default="2022-01-01", help='start date for inference in ISO format (default: %(default)s)')
+    parser.add_argument('--end-date', type=str, default="2022-01-08", help='end date for inference in ISO format (default: %(default)s)')
+    parser.add_argument('--output-path', type=str, default="../../../scratch/project_465002687/Predictions", help='directory to save predictions in zarr format (default: %(default)s)')
+    parser.add_argument('--num-ensemble', type=int, default=1, help='number of ensemble members to run in parallel (default: %(default)s)')
+    args = parser.parse_args()
+    print("------- Arguments:-------")
+    for key, value in sorted(vars(args).items()):
+        print(key, '=', value)
+    print("------------------------")
+
+    # check if the arguments are valid
+    try:       
+        start_date = np.datetime64(args.start_date+"T00:00:00")
+        end_date = np.datetime64(args.end_date+"T12:00:00")
+        assert start_date < end_date, "start-date must be before end-date"
+    except Exception as e:
+        print(f"Invalid date format: {e}")
+    # SCRATCH_PATH = "../../../scratch/project_465002687/data/era5/wb2_2021-12-30_2023-01-01_12h_1deg.zarr"
+    degree = 0.25 if "0.25" in args.model else 1
+    OUT_DIR = args.output_path
+    os.makedirs(OUT_DIR, exist_ok=True)
+    NUM_ENSEMBLE = args.num_ensemble
 
 
+
+    ###################################################################################
+    print("---------- Loading model... ----------")
+    t0 = time.time()
+    gcs_client = storage.Client.create_anonymous_client()
+    gcs_bucket = gcs_client.get_bucket("dm_graphcast")
+    dir_prefix = "gencast/"
+
+    avalible_models = {
+        "mini":"GenCast 1p0deg Mini <2019.npz",
+        "1":"GenCast 1p0deg <2019.npz",
+        "0.25":"GenCast 0p25deg <2019.npz",
+        "0.25_operational":"GenCast 0p25deg Operational <2022.npz"
+    }
+
+    model_selected = avalible_models[args.model]
+    try:
+        with gcs_bucket.blob(dir_prefix + f"params/{model_selected}").open("rb") as f:
+            ckpt = checkpoint.load(f, gencast.CheckPoint)
+    except Exception as e:
+        print(f"Error loading model checkpoint: {e}")
+    
+    params = ckpt.params
+    task_config = ckpt.task_config
+    sampler_config = ckpt.sampler_config
+    noise_config = ckpt.noise_config
+    noise_encoder_config = ckpt.noise_encoder_config
+    denoiser_architecture_config = ckpt.denoiser_architecture_config
+    denoiser_architecture_config.sparse_transformer_config.attention_type = "triblockdiag_mha"
+    denoiser_architecture_config.sparse_transformer_config.mask_type = "full"
+    print(f"Model loaded in {time.time()-t0:.1f}s | {model_selected}")
+
+    print("---------- Loading normalization stats... ----------")
+    t0 = time.time()
+    with gcs_bucket.blob(dir_prefix + "stats/diffs_stddev_by_level.nc").open("rb") as f:
+        diffs_stddev_by_level = xarray.load_dataset(f).compute()
+    with gcs_bucket.blob(dir_prefix + "stats/mean_by_level.nc").open("rb") as f:
+        mean_by_level = xarray.load_dataset(f).compute()
+    with gcs_bucket.blob(dir_prefix + "stats/stddev_by_level.nc").open("rb") as f:
+        stddev_by_level = xarray.load_dataset(f).compute()
+    with gcs_bucket.blob(dir_prefix + "stats/min_by_level.nc").open("rb") as f:
+        min_by_level = xarray.load_dataset(f).compute()
+    print(f"Stats loaded in {time.time()-t0:.1f}s")
+
+
+    # INPUT: None (uses global configurations and loaded statistics).
+    # OUTPUT: A configured Haiku model object wrapped with normalization and NaN-handling layers.
+    def construct_wrapped_gencast():
+        predictor = gencast.GenCast(
+            sampler_config=sampler_config,
+            task_config=task_config,
+            denoiser_architecture_config=denoiser_architecture_config,
+            noise_config=noise_config,
+            noise_encoder_config=noise_encoder_config,
+        )
+        predictor = normalization.InputsAndResiduals(
+            predictor,
+            diffs_stddev_by_level=diffs_stddev_by_level,
+            mean_by_level=mean_by_level,
+            stddev_by_level=stddev_by_level,
+        )
+        predictor = nan_cleaning.NaNCleaner(
+            predictor=predictor,
+            reintroduce_nans=True,
+            fill_value=min_by_level,
+            var_to_clean="sea_surface_temperature",
+        )
+        return predictor
+
+    # INPUT: 'inputs' (historical weather data), 'targets_template' (empty arrays defining the prediction shape), and 'forcings' (known future variables like solar radiation).
+    # OUTPUT: A tuple containing the raw model prediction arrays and an empty Haiku state dictionary.
+    @hk.transform_with_state
+    def run_forward(inputs, targets_template, forcings):
+        predictor = construct_wrapped_gencast()
+        return predictor(inputs, targets_template=targets_template, forcings=forcings)
+
+    # INPUT: 'rng' (random seed for the diffusion process), alongside the 'inputs', 'targets_template', and 'forcings' arrays.
+    # OUTPUT: The compiled and parallelized prediction arrays, with the empty state dictionary explicitly discarded.
+    state = {}
+    run_forward_jitted = jax.jit(
+        lambda rng, i, t, f: run_forward.apply(params, state, rng, i, t, f)[0]
+    )
+    run_forward_pmap = xarray_jax.pmap(run_forward_jitted, dim="sample")
+
+    print("---------- Model built. ----------")
+
+    ###########################################################################
+    print("---------- Loading data ... ----------")
+    t0 = time.time()
+    path = SCRATCH_PATH + f"wb2_{args.start_date}_{args.end_date}_12h_{float(degree)}deg.zarr"
+    if os.path.exists(path):
+        print(f"Found existing data file at {path}. Loading data from this file for inference.")
+        wb2 = prepare_data(path, deg=degree, time_slice=slice(args.start_date, args.end_date))
+    else:
+        print("No existing data file found. Downloading data.")
+        wb2 = download_data(path, deg=degree, time_slice=slice(args.start_date, args.end_date))
+        print(f"Data downloaded and saved to {path} for future use.")
+    
+    print(f"Data loading time: {time.time()-t0:.1f}s ")
+    print("---------- Data loaded. ----------")
+    ####################################################################################
+    if args.sanity_check:
+        t0 = time.time()
+        sanity_check_predictions(model=args.model)
+        print(f"Sanity checks completed in {time.time()-t0:.1f}s")
+
+
+    #############################################################################
+    print("Running inference ...")
+    t0 = time.time()
+    rng = jax.random.PRNGKey(0)
+    rngs = np.stack([jax.random.fold_in(rng, i) for i in range(NUM_ENSEMBLE)], axis=0)
+    wb2 = wb2.assign_coords(datetime=wb2.time)
+    data_utils.add_derived_vars(wb2)
+    data_utils.add_tisr_var(wb2)
+
+    first_time = wb2.time[0]    
+    wb2 = wb2.assign_coords(time=(wb2.time - wb2.time[0]).astype("timedelta64[ns]"))
+
+    out_path = os.path.join(OUT_DIR, f"predictions_{args.model}_{args.start_date}_{args.end_date}_12h_{degree}deg.zarr")
+    num_predictions = wb2.sizes["time"] - 2
+
+    for i in range(num_predictions):
+        t1 = time.time()
+        
+        # Slice out a 3-step window from the ground truth data: 
+        # 2 steps for input (0h, 12h), 1 step for the target/forcing (24h)
+        wb2_slice = wb2.isel(time=slice(i, i + 3))
+        
+        # Reset time coordinate locally so the model treats the start of this slice as '0h'
+        wb2_slice = wb2_slice.assign_coords(time=(wb2_slice.time - wb2_slice.time[0]).astype("timedelta64[ns]"))
+
+        w_eval_inputs, w_eval_targets, w_eval_forcings = data_utils.extract_inputs_targets_forcings(
+            wb2_slice, target_lead_times=slice("12h", "12h"), **dataclasses.asdict(task_config)
+        )
+        w_eval_inputs = w_eval_inputs.expand_dims(batch=1).compute()
+        w_eval_targets = w_eval_targets.expand_dims(batch=1).compute()
+        w_eval_forcings = w_eval_forcings.expand_dims(batch=1).compute()
+
+        chunks = []
+        for chunk in rollout.chunked_prediction_generator_multiple_runs(
+            predictor_fn=run_forward_pmap,
+            rngs=rngs,
+            inputs=w_eval_inputs,
+            targets_template=w_eval_targets * np.nan,
+            forcings=w_eval_forcings,
+            num_steps_per_chunk=1,
+            num_samples=NUM_ENSEMBLE,
+            pmap_devices=jax.local_devices()
+        ):
+            chunks.append(chunk)
+            
+        prediction = xarray.combine_by_coords(chunks)
+        prediction = prediction.assign_coords(lon=(((prediction.lon + 180) % 360) - 180)).sortby(["lat", "lon"])
+        prediction_region = prediction[["2m_temperature"]].sel(lat=slice(45.0, 65.0), lon=slice(-5.0, 25.0))
+
+
+
+
+
+        for name in prediction_region.variables:
+            prediction_region[name].encoding.clear()
+        prediction_region.encoding = {}
+
+        # The prediction's local time is 12h. Map it back to the absolute time it corresponds to
+        prediction_region = prediction_region.drop_vars("datetime", errors="ignore")
+        absolute_target_time = first_time + wb2.time[i + 2].astype("timedelta64[ns]")
+        prediction_region = prediction_region.assign_coords(time=[absolute_target_time.values])        
+
+        if i == 0:
+            print("Time for first prediction chunk: {:.1f}s".format(time.time() - t1))
+            prediction_region.to_zarr(out_path, mode="w")
+        else:
+            prediction_region.to_zarr(out_path, mode="a", append_dim="time")
+            
+    print(f"Predictions saved to {out_path}")
+    print(f"Inference completed in {time.time()-t0:.1f}s")

@@ -1,0 +1,79 @@
+Imports done.
+Import time: 18.9s
+[RocmDevice(id=0)]
+Running inference ...
+------- Arguments:-------
+end_date = 2019-03-30
+model = mini
+num_ensemble = 1
+output_path = ../../../scratch/project_465002687/Predictions
+sanity_check = True
+start_date = 2019-03-28
+------------------------
+---------- Loading model... ----------
+Model loaded in 18.9s | GenCast 1p0deg Mini <2019.npz
+---------- Loading normalization stats... ----------
+Stats loaded in 4.5s
+---------- Model built. ----------
+---------- Loading data ... ----------
+Found existing data file at ../../../scratch/project_465002687/data/era5/wb2_2019-03-28_2019-03-30_12h_1deg.zarr. Loading data from this file for inference.
+Data loading time: 0.1s 
+---------- Data loaded. ----------
+-------------- SANITY CHECKS ON FINAL PREDICTIONS: --------------
+=== Loaded Google sample batch ===
+=== LoadedWeatherBench2 ERA5 (processed) ===
+Check if datasets are the same
+=== SHAPE ===
+Google: lat=181 lon=360 time=3
+WB2:    lat=181 lon=360 time=3
+lat match: True
+lon match: True
+
+=== LAT/LON VALUES ===
+Google lat: first=-90.0 last=90.0 step=1.0000
+WB2    lat: first=-90.0 last=90.0 step=1.0000
+Google lon: first=0.0 last=359.0 step=1.0000
+WB2    lon: first=0.0 last=359.0 step=1.0000
+
+=== TIME ===
+Google time: [             0 43200000000000 86400000000000]
+WB2    time: ['2019-03-29T00:00:00.000000000' '2019-03-29T12:00:00.000000000'
+ '2019-03-30T00:00:00.000000000']
+
+=== VARS ===
+In Google but not WB2: {'year_progress_sin', 'year_progress_cos', 'day_progress_sin', 'day_progress_cos'}
+In WB2 but not Google: {'2m_dewpoint_temperature', 'surface_pressure', 'integrated_vapor_transport', 'lapse_rate', 'mean_top_downward_short_wave_radiation_flux', 'mean_vertically_integrated_moisture_divergence', 'snow_depth', 'type_of_high_vegetation', '10m_wind_speed', 'high_vegetation_cover', 'low_vegetation_cover', 'standard_deviation_of_orography', 'vorticity', 'volumetric_soil_water_layer_2', 'type_of_low_vegetation', 'volumetric_soil_water_layer_4', 'angle_of_sub_gridscale_orography', 'total_column_vapor', 'total_column_water_vapour', 'relative_humidity', 'divergence', 'ageostrophic_wind_speed', 'total_cloud_cover', 'anisotropy_of_sub_gridscale_orography', 'boundary_layer_height', 'slope_of_sub_gridscale_orography', 'wind_speed', 'eddy_kinetic_energy', 'geostrophic_wind_speed', 'mean_top_net_long_wave_radiation_flux', 'mean_top_net_short_wave_radiation_flux', 'total_column_water', 'mean_surface_net_long_wave_radiation_flux', 'standard_deviation_of_filtered_subgrid_orography', 'mean_surface_net_short_wave_radiation_flux', 'total_precipitation_24hr', 'mean_surface_sensible_heat_flux', 'soil_type', 'volumetric_soil_water_layer_1', 'total_precipitation_6hr', 'volumetric_soil_water_layer_3', 'mean_surface_latent_heat_flux', 'lake_cover', 'sea_ice_cover', 'leaf_area_index_high_vegetation', 'leaf_area_index_low_vegetation', 'potential_vorticity', 'above_ground'}
+
+=== 10 POINT DATA VALUE COMPARISON ===
+Time steps in Google: 3 | Time steps in WB2: 3
+Point 1 (lat_idx=0, lon_idx=0): Google=227.6898, WB2=227.6898, Diff=0.0000
+Point 2 (lat_idx=20, lon_idx=39): Google=263.7016, WB2=263.7016, Diff=0.0000
+Point 3 (lat_idx=40, lon_idx=79): Google=278.4731, WB2=278.4731, Diff=0.0000
+Point 4 (lat_idx=60, lon_idx=119): Google=294.6378, WB2=294.6378, Diff=0.0000
+Point 5 (lat_idx=80, lon_idx=159): Google=300.8282, WB2=300.8282, Diff=0.0000
+Point 6 (lat_idx=100, lon_idx=199): Google=299.0902, WB2=299.0902, Diff=0.0000
+Point 7 (lat_idx=120, lon_idx=239): Google=288.2881, WB2=288.2881, Diff=0.0000
+Point 8 (lat_idx=140, lon_idx=279): Google=259.5414, WB2=259.5414, Diff=0.0000
+Point 9 (lat_idx=160, lon_idx=319): Google=235.8982, WB2=235.8982, Diff=0.0000
+Point 10 (lat_idx=180, lon_idx=359): Google=246.3012, WB2=246.3012, Diff=0.0000
+
+=== RUNNING GOOGLE DATA THROUGH MODEL ===
+=== RUNNING WB2 DATA THROUGH MODEL ===
+
+=== 10 POINT PREDICTION VALUE COMPARISON ===
+Pred Point 1 (lat_idx=0, lon_idx=0): Google=233.3349, WB2=233.3319, Diff=0.0030
+Pred Point 2 (lat_idx=20, lon_idx=39): Google=259.9807, WB2=259.9684, Diff=0.0123
+Pred Point 3 (lat_idx=40, lon_idx=79): Google=279.2461, WB2=279.2460, Diff=0.0000
+Pred Point 4 (lat_idx=60, lon_idx=119): Google=292.1772, WB2=292.1831, Diff=0.0059
+Pred Point 5 (lat_idx=80, lon_idx=159): Google=301.0143, WB2=301.0143, Diff=0.0000
+Pred Point 6 (lat_idx=100, lon_idx=199): Google=302.2716, WB2=302.2989, Diff=0.0273
+Pred Point 7 (lat_idx=120, lon_idx=239): Google=256.8686, WB2=256.9090, Diff=0.0404
+Pred Point 8 (lat_idx=140, lon_idx=279): Google=289.3250, WB2=289.2996, Diff=0.0254
+Pred Point 9 (lat_idx=160, lon_idx=319): Google=240.6397, WB2=240.6667, Diff=0.0270
+Pred Point 10 (lat_idx=180, lon_idx=359): Google=249.0646, WB2=249.0655, Diff=0.0010
+---------------- Sanity checks on predictions completed. ----------------
+Sanity checks completed in 291.6s
+Running inference ...
+Time for first prediction chunk: 5.2s
+Predictions saved to ../../../scratch/project_465002687/Predictions/predictions_mini_2019-03-28_2019-03-30_12h_1deg.zarr
+Inference completed in 10.0s

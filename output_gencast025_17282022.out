@@ -1,0 +1,75 @@
+Imports done.
+Import time: 38.6s
+[RocmDevice(id=0)]
+Running inference ...
+------- Arguments:-------
+end_date = 2019-03-30
+model = 0.25
+num_ensemble = 1
+output_path = ../../../scratch/project_465002687/Predictions
+sanity_check = True
+start_date = 2019-03-29
+------------------------
+---------- Loading model... ----------
+Model loaded in 19.4s | GenCast 0p25deg <2019.npz
+---------- Loading normalization stats... ----------
+Stats loaded in 4.2s
+---------- Model built. ----------
+---------- Loading data ... ----------
+Found existing data file at ../../../scratch/project_465002687/data/era5/wb2_2019-03-29_2019-03-30_12h_0.25deg.zarr. Loading data from this file for inference.
+Data loading time: 0.1s 
+---------- Data loaded. ----------
+-------------- SANITY CHECKS ON FINAL PREDICTIONS: --------------
+=== Loaded Google sample batch ===
+=== LoadedWeatherBench2 ERA5 (processed) ===
+Check if datasets are the same
+=== SHAPE ===
+Google: lat=721 lon=1440 time=3
+WB2:    lat=721 lon=1440 time=3
+lat match: True
+lon match: True
+
+=== LAT/LON VALUES ===
+Google lat: first=-90.0 last=90.0 step=0.2500
+WB2    lat: first=-90.0 last=90.0 step=0.2500
+Google lon: first=0.0 last=359.75 step=0.2500
+WB2    lon: first=0.0 last=359.75 step=0.2500
+
+=== TIME ===
+Google time: [             0 43200000000000 86400000000000]
+WB2    time: ['2019-03-29T00:00:00.000000000' '2019-03-29T12:00:00.000000000'
+ '2019-03-30T00:00:00.000000000']
+
+=== VARS ===
+In Google but not WB2: {'day_progress_sin', 'year_progress_cos', 'year_progress_sin', 'day_progress_cos'}
+In WB2 but not Google: set()
+=== check for nans ===
+Variable '2m_temperature' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'mean_sea_level_pressure' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable '10m_u_component_of_wind' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable '10m_v_component_of_wind' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'sea_surface_temperature' has 1055628 NaNs in WB2 data and 1055628 NaNs in Google data.
+Variable 'total_precipitation_12hr' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'geopotential_at_surface' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'land_sea_mask' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'geopotential' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'specific_humidity' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'temperature' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'u_component_of_wind' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'v_component_of_wind' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+Variable 'vertical_velocity' has 0 NaNs in WB2 data and 0 NaNs in Google data.
+
+=== 10 POINT DATA VALUE COMPARISON ===
+Time steps in Google: 3 | Time steps in WB2: 3
+Point 1 (lat_idx=0, lon_idx=0): Google=227.6898, WB2=227.6898, Diff=0.0000
+Point 2 (lat_idx=80, lon_idx=159): Google=262.8125, WB2=262.8125, Diff=0.0000
+Point 3 (lat_idx=160, lon_idx=319): Google=278.2508, WB2=278.2508, Diff=0.0000
+Point 4 (lat_idx=240, lon_idx=479): Google=293.4809, WB2=293.4809, Diff=0.0000
+Point 5 (lat_idx=320, lon_idx=639): Google=300.0808, WB2=300.0808, Diff=0.0000
+Point 6 (lat_idx=400, lon_idx=799): Google=299.2705, WB2=299.2705, Diff=0.0000
+Point 7 (lat_idx=480, lon_idx=959): Google=288.1324, WB2=288.1324, Diff=0.0000
+Point 8 (lat_idx=560, lon_idx=1119): Google=259.5746, WB2=259.5746, Diff=0.0000
+Point 9 (lat_idx=640, lon_idx=1279): Google=236.0294, WB2=236.0294, Diff=0.0000
+Point 10 (lat_idx=720, lon_idx=1439): Google=246.3012, WB2=246.3012, Diff=0.0000
+
+=== RUNNING GOOGLE DATA THROUGH MODEL ===
