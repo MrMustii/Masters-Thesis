@@ -9,10 +9,12 @@ import sys
 import os
 import pandas as pd
 import argparse
-from datatest import prepare_data, download_data, SCRATCH_PATH
+from config import GENCAST_LIB, DEFAULT_OUTPUT, SCRATCH_PATH
+from datatest import prepare_data, download_data
 import datetime
 
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
+sys.path.insert(0, GENCAST_LIB)
+sys.path.insert(0, os.path.dirname(GENCAST_LIB))
 
 from google.cloud import storage
 from graphcast import rollout
@@ -22,6 +24,7 @@ from graphcast import checkpoint
 from graphcast import data_utils
 from graphcast import gencast
 from graphcast import nan_cleaning
+from graphcast import denoiser as _denoiser_module
 from ploting import plot_map
 jax.config.update("jax_default_matmul_precision", "highest")
 # jax.config.update("jax_debug_nans", True)
@@ -34,6 +37,8 @@ print(jax.devices())
 # SCRATCH_PATH =  "../../../scratch/project_465002687/data/era5/wb2_2022_subset.zarr"
 # SCRATCH_PATH = "../../../scratch/project_465002687/data/era5/wb2_2022_week1_subset.zarr"
 # SCRATCH_PATH = "../../../scratch/project_465002687/data/era5/wb2_2021-12-30_2023-01-01_12h_1deg.zarr"
+MIN_LAT, MAX_LAT = 20., 82.
+MIN_LON, MAX_LON = -30., 60.
 
 
 
@@ -176,12 +181,13 @@ def sanity_check_predictions(model="mini"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default="mini", choices=["mini", "1","0.25","0.25_operational"], help='which model checkpoint to use for inference (Choices: %(choices)s)')
+    parser.add_argument('--model', type=str, default="mini", choices=["mini", "1","0.25","0.25_operational","modified"], help='which model checkpoint to use for inference (Choices: %(choices)s)')
     parser.add_argument('--sanity-check', action='store_true', help='whether to run sanity checks comparing google data and predictions to weatherbench2 data')
     parser.add_argument('--start-date', type=str, default="2022-01-01", help='start date for inference in ISO format (default: %(default)s)')
     parser.add_argument('--end-date', type=str, default="2022-01-08", help='end date for inference in ISO format (default: %(default)s)')
-    parser.add_argument('--output-path', type=str, default="../../../scratch/project_465002687/Predictions", help='directory to save predictions in zarr format (default: %(default)s)')
+    parser.add_argument('--output-path', type=str, default=DEFAULT_OUTPUT, help='directory to save predictions in zarr format (default: %(default)s)')
     parser.add_argument('--num-ensemble', type=int, default=1, help='number of ensemble members to run in parallel (default: %(default)s)')
+    parser.add_argument('--save-type', type=str, default="zarr", choices=["nc", "zarr"], help='output file format (default: %(default)s)')
     args = parser.parse_args()
     print("------- Arguments:-------")
     for key, value in sorted(vars(args).items()):
@@ -196,7 +202,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Invalid date format: {e}")
     # SCRATCH_PATH = "../../../scratch/project_465002687/data/era5/wb2_2021-12-30_2023-01-01_12h_1deg.zarr"
-    degree = 0.25 if "0.25" in args.model else 1
+    degree = 0.25 if ("0.25" in args.model or args.model == "modified") else 1
     OUT_DIR = args.output_path
     os.makedirs(OUT_DIR, exist_ok=True)
     NUM_ENSEMBLE = args.num_ensemble
@@ -217,12 +223,19 @@ if __name__ == "__main__":
         "0.25_operational":"GenCast 0p25deg Operational <2022.npz"
     }
 
-    model_selected = avalible_models[args.model]
+    model_selected = avalible_models["0.25"] if args.model == "modified" else avalible_models[args.model]
     try:
         with gcs_bucket.blob(dir_prefix + f"params/{model_selected}").open("rb") as f:
             ckpt = checkpoint.load(f, gencast.CheckPoint)
     except Exception as e:
         print(f"Error loading model checkpoint: {e}")
+
+    if args.model == "modified":
+        from modified_Gencast.denoiser import ModifiedDenoiserArchitecture
+        from modified_Gencast import regional_utils
+        regional_utils.patch_samplers_utils()
+        _denoiser_module._DenoiserArchitecture = ModifiedDenoiserArchitecture
+        print("Modified denoiser architecture and sampler patches applied.")
     
     params = ckpt.params
     task_config = ckpt.task_config
@@ -291,7 +304,7 @@ if __name__ == "__main__":
     ###########################################################################
     print("---------- Loading data ... ----------")
     t0 = time.time()
-    path = SCRATCH_PATH + f"wb2_{args.start_date}_{args.end_date}_12h_{float(degree)}deg.zarr"
+    path = SCRATCH_PATH + f"wb2_{args.start_date}_{args.end_date}_6h_{float(degree)}deg.zarr"
     if os.path.exists(path):
         print(f"Found existing data file at {path}. Loading data from this file for inference.")
         wb2 = prepare_data(path, deg=degree, time_slice=slice(args.start_date, args.end_date))
@@ -321,16 +334,17 @@ if __name__ == "__main__":
     first_time = wb2.time[0]    
     wb2 = wb2.assign_coords(time=(wb2.time - wb2.time[0]).astype("timedelta64[ns]"))
 
-    out_path = os.path.join(OUT_DIR, f"predictions_{args.model}_{args.start_date}_{args.end_date}_12h_{degree}deg.zarr")
-    num_predictions = wb2.sizes["time"] - 2
+    out_path = os.path.join(OUT_DIR, f"predictions_{args.model}_{args.start_date}_{args.end_date}_6h_{degree}deg.{args.save_type}")
+    num_predictions = wb2.sizes["time"] - 4
+    all_predictions = []
 
     for i in range(num_predictions):
         t1 = time.time()
-        
-        # Slice out a 3-step window from the ground truth data: 
-        # 2 steps for input (0h, 12h), 1 step for the target/forcing (24h)
-        wb2_slice = wb2.isel(time=slice(i, i + 3))
-        
+
+        # Pick 3 frames 12h apart from the 6h grid: input at +0h and +12h, target at +24h.
+        # Sliding by 1 in 6h steps shifts the window by 6h each iteration.
+        wb2_slice = wb2.isel(time=[i, i + 2, i + 4])
+
         # Reset time coordinate locally so the model treats the start of this slice as '0h'
         wb2_slice = wb2_slice.assign_coords(time=(wb2_slice.time - wb2_slice.time[0]).astype("timedelta64[ns]"))
 
@@ -356,7 +370,7 @@ if __name__ == "__main__":
             
         prediction = xarray.combine_by_coords(chunks)
         prediction = prediction.assign_coords(lon=(((prediction.lon + 180) % 360) - 180)).sortby(["lat", "lon"])
-        prediction_region = prediction[["2m_temperature"]].sel(lat=slice(45.0, 65.0), lon=slice(-5.0, 25.0))
+        prediction_region = prediction[["2m_temperature"]].sel(lat=slice(MIN_LAT, MAX_LAT), lon=slice(MIN_LON, MAX_LON))
 
 
 
@@ -368,14 +382,20 @@ if __name__ == "__main__":
 
         # The prediction's local time is 12h. Map it back to the absolute time it corresponds to
         prediction_region = prediction_region.drop_vars("datetime", errors="ignore")
-        absolute_target_time = first_time + wb2.time[i + 2].astype("timedelta64[ns]")
+        absolute_target_time = first_time + wb2.time[i + 4].astype("timedelta64[ns]")
         prediction_region = prediction_region.assign_coords(time=[absolute_target_time.values])        
 
         if i == 0:
             print("Time for first prediction chunk: {:.1f}s".format(time.time() - t1))
-            prediction_region.to_zarr(out_path, mode="w")
-        else:
-            prediction_region.to_zarr(out_path, mode="a", append_dim="time")
-            
+
+        all_predictions.append(prediction_region)
+
+    ds = xarray.concat(all_predictions, dim="time")
+    if args.save_type == "zarr":
+        print("Saving predictions to Zarr...")
+        ds.to_zarr(out_path, mode="w")
+    else:
+        print("Saving predictions to NetCDF...")
+        ds.to_netcdf(out_path)
     print(f"Predictions saved to {out_path}")
     print(f"Inference completed in {time.time()-t0:.1f}s")

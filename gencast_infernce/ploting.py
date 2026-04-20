@@ -134,89 +134,64 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
 
-    ds_truth = xr.open_zarr("gencast_infernce/predictions/crop_vs_uncroped/ground_truth_europe.zarr")
-    ds_global = xr.open_zarr("gencast_infernce/predictions/crop_vs_uncroped/global_predictions_europe.zarr")
-    ds_regional = xr.open_zarr("gencast_infernce/predictions/crop_vs_uncroped/regional_predictions.zarr")
+    ZARR_PATH = "/work3/s215225/Predictions/predictions_0.25_2019-03-29_2019-03-30_12h_0.25deg.zarr"
+
+    WB2_PATH  = "/work3/s215225/data/era5/wb2_2019-03-29_2019-03-30_12h_0.25deg.zarr"
+    PRED_PATH = "/work3/s215225/Predictions/predictions_0.25_2019-03-29_2019-03-30_12h_0.25deg.zarr"
+
+    ds_wb2  = xr.open_zarr(WB2_PATH)
+    ds_pred = xr.open_zarr(PRED_PATH)
 
     variable = "2m_temperature"
 
-    def prep_data(ds, var):
-        data = ds[var]
-        isel_kwargs = {dim: 0 for dim in data.dims if dim not in ("lat", "lon")}
-        data = data.isel(**isel_kwargs)
-        data = data.sortby(["lat", "lon"])
-        return data.sel(lon=slice(3.5, 18.25), lat=slice(50.5, 61.25)).compute()
+    # prediction: first (only) prediction step, collapse batch/sample dims
+    da_pred = ds_pred[variable]
+    isel_kwargs = {dim: 0 for dim in da_pred.dims if dim not in ("lat", "lon", "time")}
+    isel_kwargs["time"] = 0
+    data_pred = (
+        da_pred
+        .isel(**isel_kwargs)
+        .sortby(["lat", "lon"])
+        .compute()
+    )
 
-    data_truth = prep_data(ds_truth, variable)
-    data_global = prep_data(ds_global, variable)
-    data_regional = prep_data(ds_regional, variable)
-    data_diff = data_regional - data_global
+    # ground truth: 3rd time step of wb2, convert lon to -180/180 then slice same region as saved predictions
+    data_gt = (
+        ds_wb2[variable]
+        .isel(time=2)
+        .assign_coords(lon=(((ds_wb2.lon + 180) % 360) - 180))
+        .sortby(["lat", "lon"])
+        .sel(lat=slice(45.0, 65.0), lon=slice(-5.0, 25.0))
+        .compute()
+    )
 
-    vmin = min(data_truth.min().item(), data_global.min().item(), data_regional.min().item())
-    vmax = max(data_truth.max().item(), data_global.max().item(), data_regional.max().item())
+    data_diff = data_pred - data_gt
+
+    vmin = min(data_gt.min().item(), data_pred.min().item())
+    vmax = max(data_gt.max().item(), data_pred.max().item())
     diff_max = max(abs(data_diff.min().item()), abs(data_diff.max().item()))
 
-    plotter = Plot(ds_truth)
+    plotter = Plot(ds_wb2)
 
-    fig = plt.figure(figsize=(28, 6))
-    gs = gridspec.GridSpec(1, 6, width_ratios=[1, 1, 1, 0.05, 1, 0.05])
+    fig = plt.figure(figsize=(24, 8))
+    gs = gridspec.GridSpec(1, 5, width_ratios=[1, 1, 0.05, 1, 0.05])
     gs.update(wspace=0.15, hspace=0.1)
 
     ax1 = fig.add_subplot(gs[0, 0], projection=plotter.projection)
-    im1, _, _ = plotter.individual_plot(data_truth, ax=ax1, title="Ground Truth", vmin=vmin, vmax=vmax)
+    im1, _, _ = plotter.individual_plot(data_gt, ax=ax1, title="Ground Truth (2019-03-30 00:00)", vmin=vmin, vmax=vmax)
 
     ax2 = fig.add_subplot(gs[0, 1], projection=plotter.projection)
-    plotter.individual_plot(data_global, ax=ax2, title="Global Model (Unsliced)", vmin=vmin, vmax=vmax)
+    plotter.individual_plot(data_pred, ax=ax2, title="Prediction (2019-03-30 00:00)", vmin=vmin, vmax=vmax)
 
-    ax3 = fig.add_subplot(gs[0, 2], projection=plotter.projection)
-    plotter.individual_plot(data_regional, ax=ax3, title="Regional Model (Sliced)", vmin=vmin, vmax=vmax)
-
-    cax1 = fig.add_subplot(gs[0, 3])
+    cax1 = fig.add_subplot(gs[0, 2])
     fig.colorbar(im1, cax=cax1, label=f"{variable} (K)")
 
-    ax4 = fig.add_subplot(gs[0, 4], projection=plotter.projection)
-    im4, _, _ = plotter.individual_plot(data_diff, ax=ax4, title="Difference (Regional - Global)", vmin=-diff_max, vmax=diff_max, cmap="RdBu_r")
+    ax3 = fig.add_subplot(gs[0, 3], projection=plotter.projection)
+    im3, _, _ = plotter.individual_plot(data_diff, ax=ax3, title="Difference (Pred - GT)", vmin=-diff_max, vmax=diff_max, cmap="RdBu_r")
 
-    cax2 = fig.add_subplot(gs[0, 5])
-    fig.colorbar(im4, cax=cax2, label="Difference (K)")
+    cax2 = fig.add_subplot(gs[0, 4])
+    fig.colorbar(im3, cax=cax2, label="Difference (K)")
 
-    plt.savefig("comparison_plot2.png", dpi=300, bbox_inches='tight')
+    plt.savefig("gt_vs_pred.png", dpi=300, bbox_inches='tight')
     plt.close()
-
-    # full EU domain
-    eu_proj = ccrs.LambertConformal(central_longitude=15, central_latitude=50, standard_parallels=(50, 50))
-    plotter_eu = Plot(ds_truth)
-    plotter_eu.projection = eu_proj
-
-    data_truth_eu = ds_truth[variable].isel(**{dim: 0 for dim in ds_truth[variable].dims if dim not in ("lat", "lon")}).sortby(["lat", "lon"]).sel(lat=slice(25, 82), lon=slice(-30, 60)).compute()
-    data_global_eu = ds_global[variable].isel(**{dim: 0 for dim in ds_global[variable].dims if dim not in ("lat", "lon")}).sortby(["lat", "lon"]).sel(lat=slice(25, 82), lon=slice(-30, 60)).compute()
-    data_regional_eu = ds_regional[variable].isel(**{dim: 0 for dim in ds_regional[variable].dims if dim not in ("lat", "lon")}).sortby(["lat", "lon"]).sel(lat=slice(25, 82), lon=slice(-30, 60)).compute()
-    data_diff_eu = data_regional_eu - data_global_eu
-
-    vmin_eu = min(data_truth_eu.min().item(), data_global_eu.min().item(), data_regional_eu.min().item())
-    vmax_eu = max(data_truth_eu.max().item(), data_global_eu.max().item(), data_regional_eu.max().item())
-    diff_max_eu = max(abs(data_diff_eu.min().item()), abs(data_diff_eu.max().item()))
-
-    fig2 = plt.figure(figsize=(28, 6))
-    gs2 = gridspec.GridSpec(1, 6, width_ratios=[1, 1, 1, 0.05, 1, 0.05])
-    gs2.update(wspace=0.15, hspace=0.1)
-
-    ax1e = fig2.add_subplot(gs2[0, 0], projection=eu_proj)
-    im1e, _, _ = plotter_eu.individual_plot(data_truth_eu, ax=ax1e, title="Ground Truth (Full EU)", vmin=vmin_eu, vmax=vmax_eu)
-
-    ax2e = fig2.add_subplot(gs2[0, 1], projection=eu_proj)
-    plotter_eu.individual_plot(data_global_eu, ax=ax2e, title="Global Model (Full EU)", vmin=vmin_eu, vmax=vmax_eu)
-
-    ax3e = fig2.add_subplot(gs2[0, 2], projection=eu_proj)
-    plotter_eu.individual_plot(data_regional_eu, ax=ax3e, title="Regional Model (Full EU)", vmin=vmin_eu, vmax=vmax_eu)
-
-    cax1e = fig2.add_subplot(gs2[0, 3])
-    fig2.colorbar(im1e, cax=cax1e, label=f"{variable} (K)")
-
-    ax4e = fig2.add_subplot(gs2[0, 4], projection=eu_proj)
-    im4e, _, _ = plotter_eu.individual_plot(data_diff_eu, ax=ax4e, title="Difference (Regional - Global, Full EU)", vmin=-diff_max_eu, vmax=diff_max_eu, cmap="RdBu_r")
-
-    cax2e = fig2.add_subplot(gs2[0, 5])
-    fig2.colorbar(im4e, cax=cax2e, label="Difference (K)")
-
-    plt.savefig("comparison_plot_full_eu.png", dpi=300, bbox_inches='tight')
+    print("Saved to gt_vs_pred.png")
