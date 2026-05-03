@@ -331,8 +331,14 @@ if __name__ == "__main__":
     data_utils.add_derived_vars(wb2)
     data_utils.add_tisr_var(wb2)
 
-    first_time = wb2.time[0]    
+    first_time = wb2.time[0]
     wb2 = wb2.assign_coords(time=(wb2.time - wb2.time[0]).astype("timedelta64[ns]"))
+
+    if args.model == "modified":
+        wb2 = wb2.assign_coords(lon=((wb2.lon.values + 180) % 360 - 180))
+        wb2 = wb2.sortby("lon")
+        wb2 = wb2.sel(lat=slice(MIN_LAT, MAX_LAT), lon=slice(MIN_LON, MAX_LON))
+        print(f"Regional crop applied: lat=[{MIN_LAT},{MAX_LAT}] lon=[{MIN_LON},{MAX_LON}] grid={wb2.sizes['lat']}x{wb2.sizes['lon']}")
 
     out_path = os.path.join(OUT_DIR, f"predictions_{args.model}_{args.start_date}_{args.end_date}_6h_{degree}deg.{args.save_type}")
     num_predictions = wb2.sizes["time"] - 4
@@ -369,8 +375,11 @@ if __name__ == "__main__":
             chunks.append(chunk)
             
         prediction = xarray.combine_by_coords(chunks)
-        prediction = prediction.assign_coords(lon=(((prediction.lon + 180) % 360) - 180)).sortby(["lat", "lon"])
-        prediction_region = prediction[["2m_temperature"]].sel(lat=slice(MIN_LAT, MAX_LAT), lon=slice(MIN_LON, MAX_LON))
+        if args.model == "modified":
+            prediction_region = prediction[["2m_temperature"]]
+        else:
+            prediction = prediction.assign_coords(lon=(((prediction.lon + 180) % 360) - 180)).sortby(["lat", "lon"])
+            prediction_region = prediction[["2m_temperature"]].sel(lat=slice(MIN_LAT, MAX_LAT), lon=slice(MIN_LON, MAX_LON))
 
 
 

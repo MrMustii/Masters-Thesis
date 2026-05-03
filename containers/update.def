@@ -2,4 +2,4 @@ Bootstrap: localimage
 From: containers/container.sif
 
 %post
-pip install gcsfs
+pip install optax==0.2.4

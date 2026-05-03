@@ -1,0 +1,4 @@
+command "/opt/conda/bin/conda shell.posix activate conda_container_env" was killed after 1m0s timeout
+FATAL:   "python": executable file not found in $PATH
+srun: error: nid007949: task 0: Exited with exit code 255
+srun: Terminating StepId=18147858.0

@@ -1,0 +1,61 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1777830142.980547   76016 instrument.cc:563] Metric with name 'grpc.resource_quota.calls_dropped' registered more than once. Ignoring later registration.
+E0000 00:00:1777830142.980580   76016 instrument.cc:563] Metric with name 'grpc.resource_quota.calls_rejected' registered more than once. Ignoring later registration.
+E0000 00:00:1777830142.980584   76016 instrument.cc:563] Metric with name 'grpc.resource_quota.connections_dropped' registered more than once. Ignoring later registration.
+E0000 00:00:1777830142.980587   76016 instrument.cc:563] Metric with name 'grpc.resource_quota.instantaneous_memory_pressure' registered more than once. Ignoring later registration.
+E0000 00:00:1777830142.980589   76016 instrument.cc:563] Metric with name 'grpc.resource_quota.memory_pressure_control_value' registered more than once. Ignoring later registration.
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+/opt/conda/envs/conda_container_env/lib/python3.12/site-packages/scipy/sparse/_index.py:216: SparseEfficiencyWarning: Changing the sparsity structure of a csr_matrix is expensive. lil and dok are more efficient.
+  self._set_arrayXarray(i, j, x)
+E0503 20:50:45.157055   76016 buffer_comparator.cc:156] Difference at 76677312: 0, expected 125.72
+E0503 20:50:45.157118   76016 buffer_comparator.cc:156] Difference at 76677313: 0, expected 137.098
+E0503 20:50:45.157122   76016 buffer_comparator.cc:156] Difference at 76677314: 0, expected 124.449
+E0503 20:50:45.157126   76016 buffer_comparator.cc:156] Difference at 76677315: 0, expected 130.335
+E0503 20:50:45.157130   76016 buffer_comparator.cc:156] Difference at 76677316: 0, expected 126.682
+E0503 20:50:45.157134   76016 buffer_comparator.cc:156] Difference at 76677317: 0, expected 131.138
+E0503 20:50:45.157137   76016 buffer_comparator.cc:156] Difference at 76677318: 0, expected 127.109
+E0503 20:50:45.157141   76016 buffer_comparator.cc:156] Difference at 76677319: 0, expected 130.6
+E0503 20:50:45.157144   76016 buffer_comparator.cc:156] Difference at 76677320: 0, expected 128.133
+E0503 20:50:45.157148   76016 buffer_comparator.cc:156] Difference at 76677321: 0, expected 125.543
+2026-05-03 20:50:45.216821: E external/xla/xla/service/gpu/autotuning/gemm_algorithm_picker.cc:358] Results mismatch between different GEMM algorithms. This is likely a bug/unexpected loss of precision.
+E0503 20:50:49.995298   76016 buffer_comparator.cc:156] Difference at 76677248: 102.414, expected 128.549
+E0503 20:50:49.995359   76016 buffer_comparator.cc:156] Difference at 76677249: 108.053, expected 130.757
+E0503 20:50:49.995364   76016 buffer_comparator.cc:156] Difference at 76677250: 106.381, expected 133.099
+E0503 20:50:49.995368   76016 buffer_comparator.cc:156] Difference at 76677251: 103.582, expected 130.428
+E0503 20:50:49.995372   76016 buffer_comparator.cc:156] Difference at 76677252: 103.344, expected 130.058
+E0503 20:50:49.995375   76016 buffer_comparator.cc:156] Difference at 76677253: 104.961, expected 129.482
+E0503 20:50:49.995379   76016 buffer_comparator.cc:156] Difference at 76677254: 107.158, expected 133.236
+E0503 20:50:49.995382   76016 buffer_comparator.cc:156] Difference at 76677255: 98.6386, expected 123.395
+E0503 20:50:49.995386   76016 buffer_comparator.cc:156] Difference at 76677256: 106.29, expected 132.177
+E0503 20:50:49.995390   76016 buffer_comparator.cc:156] Difference at 76677257: 103.144, expected 130.317
+2026-05-03 20:50:50.054463: E external/xla/xla/service/gpu/autotuning/gemm_algorithm_picker.cc:358] Results mismatch between different GEMM algorithms. This is likely a bug/unexpected loss of precision.
+E0503 20:51:04.260986   76016 buffer_comparator.cc:156] Difference at 230031936: 0, expected 131.093
+E0503 20:51:04.261055   76016 buffer_comparator.cc:156] Difference at 230031937: 0, expected 123.543
+E0503 20:51:04.261060   76016 buffer_comparator.cc:156] Difference at 230031938: 0, expected 130.779
+E0503 20:51:04.261064   76016 buffer_comparator.cc:156] Difference at 230031939: 0, expected 134.952
+E0503 20:51:04.261068   76016 buffer_comparator.cc:156] Difference at 230031940: 0, expected 130.765
+E0503 20:51:04.261071   76016 buffer_comparator.cc:156] Difference at 230031941: 0, expected 133.653
+E0503 20:51:04.261074   76016 buffer_comparator.cc:156] Difference at 230031942: 0, expected 128.922
+E0503 20:51:04.261078   76016 buffer_comparator.cc:156] Difference at 230031943: 0, expected 131.304
+E0503 20:51:04.261082   76016 buffer_comparator.cc:156] Difference at 230031944: 0, expected 131.14
+E0503 20:51:04.261085   76016 buffer_comparator.cc:156] Difference at 230031945: 0, expected 127.249
+2026-05-03 20:51:04.431452: E external/xla/xla/service/gpu/autotuning/gemm_algorithm_picker.cc:358] Results mismatch between different GEMM algorithms. This is likely a bug/unexpected loss of precision.
+E0503 20:51:13.344395   76016 buffer_comparator.cc:156] Difference at 230031744: 104.64, expected 129.596
+E0503 20:51:13.344463   76016 buffer_comparator.cc:156] Difference at 230031745: 106.163, expected 134.499
+E0503 20:51:13.344469   76016 buffer_comparator.cc:156] Difference at 230031746: 105.9, expected 131.908
+E0503 20:51:13.344473   76016 buffer_comparator.cc:156] Difference at 230031747: 110.54, expected 134.974
+E0503 20:51:13.344476   76016 buffer_comparator.cc:156] Difference at 230031748: 99.9406, expected 124.607
+E0503 20:51:13.344480   76016 buffer_comparator.cc:156] Difference at 230031749: 107.092, expected 130.267
+E0503 20:51:13.344484   76016 buffer_comparator.cc:156] Difference at 230031750: 107.931, expected 132.675
+E0503 20:51:13.344487   76016 buffer_comparator.cc:156] Difference at 230031751: 100.045, expected 124.085
+E0503 20:51:13.344491   76016 buffer_comparator.cc:156] Difference at 230031752: 105.466, expected 131.37
+E0503 20:51:13.344495   76016 buffer_comparator.cc:156] Difference at 230031753: 102.081, expected 127.597
+2026-05-03 20:51:13.514762: E external/xla/xla/service/gpu/autotuning/gemm_algorithm_picker.cc:358] Results mismatch between different GEMM algorithms. This is likely a bug/unexpected loss of precision.
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd: error: *** STEP 18147855.0 ON nid007883 CANCELLED AT 2026-05-03T20:57:19 ***
+slurmstepd: error: *** JOB 18147855 ON nid007883 CANCELLED AT 2026-05-03T20:57:19 ***

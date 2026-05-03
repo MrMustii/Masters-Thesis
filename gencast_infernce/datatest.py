@@ -2,7 +2,7 @@ from time import time
 import xarray as xr
 import os
 import argparse
-from config import SCRATCH_PATH
+from gencast_infernce.config import SCRATCH_PATH
 
 
 def prepare_data(location, deg=0.25, time_slice=slice("2019-03-28T12:00", "2019-03-30T00:00:00")):

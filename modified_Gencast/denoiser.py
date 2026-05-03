@@ -8,7 +8,7 @@ import numpy as np
 from scipy import sparse
 import xarray
 from google.cloud import storage
-
+from typing import Optional
 sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
 sys.path.insert(0, '/project/project_465002687/Masters-Thesis')
 from graphcast import denoiser
@@ -28,10 +28,106 @@ from graphcast import normalization
 from graphcast import data_utils
 from graphcast import rollout
 from modified_Gencast import regional_utils
+jax.config.update("jax_default_matmul_precision", "highest")
 
 MIN_LAT, MAX_LAT = 25., 82.
 MIN_LON, MAX_LON = -30., 60.
-jax.config.update("jax_default_matmul_precision", "highest")
+
+@chex.dataclass(frozen=True, eq=True)
+class NoiseEncoderConfig:
+  """Configures the noise level encoding.
+
+  Properties:
+    apply_log_first: Whether to take the log of the inputs before computing
+      Fourier features.
+    base_period: The base period to use. This should be greater or equal to the
+      range of the values, or to the period if the values have periodic
+      semantics (e.g. 2pi if they represent angles). Frequencies used will be
+      integer multiples of 1/base_period.
+    num_frequencies: The number of frequencies to use, we will use integer
+      multiples of 1/base_period from 1 up to num_frequencies inclusive. (We
+      don't include a zero frequency as this would just give constant features
+      which are redundant if a bias term is present).
+    output_sizes: Layer sizes for the MLP.
+  """
+  apply_log_first: bool = True
+  base_period: float = 16.0
+  num_frequencies: int = 32
+  # 2-layer MLP applied to Fourier features
+  output_sizes: tuple[int, int] = (32, 16)
+
+
+@chex.dataclass(eq=True)
+class SparseTransformerConfig:
+  """Sparse Transformer config."""
+  # Neighbours to attend to.
+  attention_k_hop: int
+  # Primary width, the number of channels on the carrier path.
+  d_model: int
+  # Depth, or num transformer blocks. One 'layer' is attn + ffw.
+  num_layers: int = 16
+  # Number of heads for self-attention.
+  num_heads: int = 4
+  # Attention type.
+  attention_type: str = "splash_mha"
+  # mask type if splash attention being used.
+  mask_type: str = "lazy"
+  block_q: int = 1024
+  block_kv: int = 512
+  block_kv_compute: int = 256
+  block_q_dkv: int = 512
+  block_kv_dkv: int = 1024
+  block_kv_dkv_compute: int = 1024
+  # Init scale for final ffw layer (divided by depth)
+  ffw_winit_final_mult: float = 0.0
+  # Init scale for mha w (divided by depth).
+  attn_winit_final_mult: float = 0.0
+  # Number of hidden units in the MLP blocks. Defaults to 4 * d_model.
+  ffw_hidden: int = 2048
+  # Name for haiku module.
+  name: Optional[str] = None
+
+
+@chex.dataclass(eq=True)
+class DenoiserArchitectureConfig:
+  """Defines the GenCast architecture.
+
+  Properties:
+    sparse_transformer_config: Config for the mesh transformer.
+    mesh_size: How many refinements to do on the multi-mesh.
+    latent_size: How many latent features to include in the various MLPs.
+    hidden_layers: How many hidden layers for each MLP.
+    radius_query_fraction_edge_length: Scalar that will be multiplied by the
+      length of the longest edge of the finest mesh to define the radius of
+      connectivity to use in the Grid2Mesh graph. Reasonable values are
+      between 0.6 and 1. 0.6 reduces the number of grid points feeding into
+      multiple mesh nodes and therefore reduces edge count and memory use, but
+      1 gives better predictions.
+    norm_conditioning_features: List of feature names which will be used to
+      condition the GNN via norm_conditioning, rather than as regular
+      features. If this is provided, the GNN has to support the
+      `global_norm_conditioning` argument. For now it only supports global
+      norm conditioning (e.g. the same vector conditions all edges and nodes
+      normalization), which means features passed here must not have "lat" or
+      "lon" axes. In the future it may support node level norm conditioning
+      too.
+    grid2mesh_aggregate_normalization: Optional constant to normalize the output
+      of aggregate_edges_for_nodes_fn in the mesh2grid GNN. This can be used to
+        reduce the shock the model undergoes when switching resolution, which
+        increases the number of edges connected to a node.
+    node_output_size: Size of the output node representations for
+        each node type. For node types not specified here, the latent node
+        representation from the output of the processor will be returned.
+  """
+
+  sparse_transformer_config: SparseTransformerConfig
+  mesh_size: int
+  latent_size: int = 512
+  hidden_layers: int = 1
+  radius_query_fraction_edge_length: float = 0.6
+  norm_conditioning_features: tuple[str, ...] = ("noise_level_encodings",)
+  grid2mesh_aggregate_normalization: Optional[float] = None
+  node_output_size: Optional[int] = None
 
 class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
     def __init__(self, denoiser_architecture_config, lat_min=MIN_LAT, lat_max=MAX_LAT, lon_min=MIN_LON, lon_max=MAX_LON):
@@ -175,6 +271,7 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
             vertices=mesh.vertices[keep_idx],
             faces=new_faces,
         )
+
 
 if __name__ == "__main__":
     gcs_client = storage.Client.create_anonymous_client()
