@@ -30,8 +30,18 @@ from graphcast import rollout
 from modified_Gencast import regional_utils
 jax.config.update("jax_default_matmul_precision", "highest")
 
-MIN_LAT, MAX_LAT = 25., 82.
-MIN_LON, MAX_LON = -30., 60.
+MIN_LAT, MAX_LAT = 40., 70.
+MIN_LON, MAX_LON = -10., 30.
+
+##### CHANGES BELOW
+# Time conditioning
+@chex.dataclass(frozen=True, eq=True)
+class LeadTimeEncoderConfig:
+  max_horizon_hours: float = 240.0
+  num_frequencies: int = 32
+  output_sizes: tuple[int, int] = (128, 128)
+####### CHANGES ABOVE
+
 
 @chex.dataclass(frozen=True, eq=True)
 class NoiseEncoderConfig:
@@ -129,8 +139,98 @@ class DenoiserArchitectureConfig:
   grid2mesh_aggregate_normalization: Optional[float] = None
   node_output_size: Optional[int] = None
 
+class ModifiedDenoiser(denoiser.Denoiser):
+  """Extends Denoiser with lead time conditioning."""
+
+  def __init__(
+      self,
+      noise_encoder_config,
+      denoiser_architecture_config,
+      ##### CHANGES BELOW
+      lead_time_encoder_config=None,
+      ####### CHANGES ABOVE
+  ):
+    self._predictor = ModifiedDenoiserArchitecture(denoiser_architecture_config=denoiser_architecture_config)
+    self._noise_level_encoder = denoiser.FourierFeaturesMLP(**noise_encoder_config)
+    ##### CHANGES BELOW
+    self._lead_time_encoder_config = lead_time_encoder_config
+    if lead_time_encoder_config is not None:
+      self._lead_time_encoder = denoiser.FourierFeaturesMLP(
+          apply_log_first=False,
+          base_period=1.0,
+          num_frequencies=lead_time_encoder_config.num_frequencies,
+          output_sizes=lead_time_encoder_config.output_sizes,
+      )
+    else:
+      self._lead_time_encoder = None
+    ####### CHANGES ABOVE
+
+  def __call__(
+      self,
+      inputs,
+      noisy_targets,
+      noise_levels,
+      forcings=None,
+      ##### CHANGES BELOW
+      lead_time_hours=None,
+      ####### CHANGES ABOVE
+      **kwargs,
+  ):
+    if forcings is None:
+      forcings = xarray.Dataset()
+    forcings = forcings.assign(noisy_targets)
+
+    if noise_levels.dims != ("batch",):
+      raise ValueError("noise_levels expected to be shape (batch,).")
+
+    # --- Noise level encoding (same as parent) ---
+    noise_level_encodings = self._noise_level_encoder(
+        xarray_jax.unwrap_data(noise_levels)
+    )
+    inputs = inputs.assign(
+        noise_level_encodings=xarray_jax.Variable(
+            ("batch", "noise_level_encoding_channels"), noise_level_encodings
+        )
+    )
+
+    ##### CHANGES BELOW
+    # --- Lead time encoding  NEW ---
+    if self._lead_time_encoder is not None:
+      if lead_time_hours is not None:
+        scaled = jnp.asarray(lead_time_hours, dtype=jnp.float32) / self._lead_time_encoder_config.max_horizon_hours
+      else:
+        time_vals = noisy_targets.time.values
+        if np.issubdtype(time_vals.dtype, np.timedelta64):
+          lead_h = float(time_vals[0] / np.timedelta64(1, 'h'))
+        else:
+          lead_h = 12.0
+        scaled = jnp.full(
+            (inputs.sizes['batch'],),
+            lead_h / self._lead_time_encoder_config.max_horizon_hours,
+            dtype=jnp.float32,
+        )
+      lt_encodings = self._lead_time_encoder(scaled)
+      inputs = inputs.assign(
+          lead_time_encodings=xarray_jax.Variable(
+              ("batch", "lead_time_encoding_channels"), lt_encodings
+          )
+      )
+    ####### CHANGES ABOVE
+
+    return self._predictor(
+        inputs=inputs,
+        targets_template=noisy_targets,
+        forcings=forcings,
+        **kwargs,
+    )
+
+
 class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
-    def __init__(self, denoiser_architecture_config, lat_min=MIN_LAT, lat_max=MAX_LAT, lon_min=MIN_LON, lon_max=MAX_LON):
+    def __init__(self, denoiser_architecture_config,
+                 ##### CHANGES BELOW
+                 lat_min=MIN_LAT, lat_max=MAX_LAT, lon_min=MIN_LON, lon_max=MAX_LON
+                 ####### CHANGES ABOVE
+                 ):
         self._spatial_features_kwargs = dict(
             add_node_positions=False,
             add_node_latitude=True,
@@ -140,14 +240,18 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
             relative_latitude_local_coordinates=True,
         )
 
-        # Store config needed to rebuild the mesh when the region changes
+        ##### CHANGES BELOW
+        # Store config needed to rebuild the mesh when the region changes NEW Unused
         self._mesh_size = denoiser_architecture_config.mesh_size
         self._radius_query_fraction = denoiser_architecture_config.radius_query_fraction_edge_length
+        ####### CHANGES ABOVE
 
         mesh = icosahedral_mesh.get_last_triangular_mesh_for_sphere(
             splits=self._mesh_size
         )
+        ##### CHANGES BELOW
         mesh = self._crop_mesh(mesh, lat_min, lat_max, lon_min, lon_max)
+        ####### CHANGES ABOVE
         self._mesh = denoiser._permute_mesh_to_banded(mesh=mesh)
 
         self._grid2mesh_gnn = deep_typed_graph_net.DeepTypedGraphNet(
@@ -216,10 +320,11 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
         self._mesh_graph_structure = None
         self._mesh2grid_graph_structure = None
 
+    ##### CHANGES BELOW
     def _maybe_init(self, sample_inputs):
         new_lat = sample_inputs.lat.values
         new_lon = sample_inputs.lon.values
-
+        # NEW Incase region change
         region_changed = (
             self._grid_lat is None
             or not np.array_equal(new_lat, self._grid_lat)
@@ -247,13 +352,16 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
         self._mesh_graph_structure      = self._init_mesh_graph()
         self._mesh2grid_graph_structure = self._init_mesh2grid_graph()
         self._initialized = True
+    ####### CHANGES ABOVE
 
+    ##### CHANGES BELOW
     @staticmethod
+    # NEW
     def _crop_mesh(mesh, lat_min, lat_max, lon_min, lon_max):
         phi, theta = model_utils.cartesian_to_spherical(
             mesh.vertices[:, 0], mesh.vertices[:, 1], mesh.vertices[:, 2])
         lat, lon = model_utils.spherical_to_lat_lon(phi, theta)
-        
+
         # Wrap longitude to [-180, 180] so it matches the MIN_LON/MAX_LON bounds correctly.
         lon = (lon + 180) % 360 - 180
 
@@ -271,9 +379,11 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
             vertices=mesh.vertices[keep_idx],
             faces=new_faces,
         )
+    ####### CHANGES ABOVE
 
 
 if __name__ == "__main__":
+    # Test
     gcs_client = storage.Client.create_anonymous_client()
     gcs_bucket = gcs_client.get_bucket("dm_graphcast")
     dir_prefix = "gencast/"

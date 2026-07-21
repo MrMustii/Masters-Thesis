@@ -8,19 +8,13 @@ from graphcast import xarray_jax
 
 
 RESOLUTION = 0.25  
+GLOBAL_LAT = np.arange(-90.0, 90.0 + RESOLUTION * 0.5, RESOLUTION)
+GLOBAL_LON = np.arange(0.0, 360.0, RESOLUTION)
 
-# Global lat/lon satisfying spherical harmonic constraint:
-# longitude_nodes == 2 * (latitude_nodes - 1) [equiangular_with_poles]
-_GLOBAL_LAT = np.arange(-90.0, 90.0 + RESOLUTION * 0.5, RESOLUTION)
-_GLOBAL_LON = np.arange(0.0, 360.0, RESOLUTION)
-
-assert len(_GLOBAL_LON) == 2 * (len(_GLOBAL_LAT) - 1), (
-    f"Global grid constraint violated: {len(_GLOBAL_LON)} lon != "
-    f"2 * ({len(_GLOBAL_LAT)} lat - 1)"
-)
+assert len(GLOBAL_LON) == 2 * (len(GLOBAL_LAT) - 1), (f"Global grid constraint violated: {len(GLOBAL_LON)} lon != " f"2 * ({len(GLOBAL_LAT)} lat - 1)")
 
 
-def _build_global_template(regional_da):
+def build_global_template(regional_da):
     """Zero DataArray on the full global grid, matching non-spatial dims of da."""
     non_spatial_dims   = [d for d in regional_da.dims if d not in ('lat', 'lon')]
     non_spatial_shape  = [regional_da.sizes[d] for d in non_spatial_dims]
@@ -28,11 +22,32 @@ def _build_global_template(regional_da):
                           if k not in ('lat', 'lon')}
 
     return xarray.DataArray(
-        data=np.zeros(non_spatial_shape + [len(_GLOBAL_LAT), len(_GLOBAL_LON)],
+        data=np.zeros(non_spatial_shape + [len(GLOBAL_LAT), len(GLOBAL_LON)],
                       dtype=regional_da.dtype),
         dims=non_spatial_dims + ['lat', 'lon'],
-        coords={**non_spatial_coords, 'lat': _GLOBAL_LAT, 'lon': _GLOBAL_LON},
+        coords={**non_spatial_coords, 'lat': GLOBAL_LAT, 'lon': GLOBAL_LON},
     )
+
+
+def boundary_margin_mask(template, margin_degrees):
+    """Boolean (lat, lon) mask, True on the outer `margin_degrees` band of the grid.
+
+    The band is the lateral-boundary belt of a regional grid: every cell within
+    `margin_degrees` of any edge of the grid's lat/lon extent. Used at inference
+    to overwrite the belt with host truth (lateral boundary forcing, see
+    BoundaryForcedPredictor in gencast.py) when eval.py/eval_continuous.py is
+    explicitly run with --boundary-margin-degrees > 0 (default is 0, off). NOT
+    used to mask the training loss: weighted_mse_per_level_regional in
+    losses.py scores the full grid, boundary belt included. The interior
+    region-of-interest is everything the mask leaves False.
+    """
+    lat = template.coords["lat"]
+    lon = template.coords["lon"]
+    lat_min, lat_max = float(lat.min()), float(lat.max())
+    lon_min, lon_max = float(lon.min()), float(lon.max())
+    in_lat_margin = (lat < lat_min + margin_degrees) | (lat > lat_max - margin_degrees)
+    in_lon_margin = (lon < lon_min + margin_degrees) | (lon > lon_max - margin_degrees)
+    return in_lat_margin | in_lon_margin
 
 
 def spherical_white_noise_like(template):
@@ -44,7 +59,7 @@ def spherical_white_noise_like(template):
     lat_vals  = template.lat.values
     lon_query = template.lon.values % 360.0  # index into [0, 360] global grid
 
-    num_wavenumbers = len(_GLOBAL_LON) // 2
+    num_wavenumbers = len(GLOBAL_LON) // 2
     power_spectrum  = xarray_jax.DataArray(
         data=np.array([1.0 / num_wavenumbers] * num_wavenumbers, dtype=np.float32),
         dims=['total_wavenumber'],
@@ -54,7 +69,7 @@ def spherical_white_noise_like(template):
         global_noise = samplers_utils.sample(
             key=hk.next_rng_key(),
             power_spectrum=power_spectrum,
-            template=_build_global_template(da),
+            template=build_global_template(da),
         )
         cropped = global_noise.sel(lat=lat_vals, lon=lon_query, method='nearest')
         return cropped.assign_coords(lat=lat_vals, lon=template.lon.values)
