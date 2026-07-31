@@ -45,11 +45,30 @@
       "geopotential_at_surface",
       "land_sea_mask"
     ],
-    "pressure_levels": [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000],
+    "pressure_levels": [
+      50,
+      100,
+      150,
+      200,
+      250,
+      300,
+      400,
+      500,
+      600,
+      700,
+      850,
+      925,
+      1000
+    ],
+    "boundary_margin_degrees": 8.5,
     "input_duration": "24h",
-    "region": null
+    "region": {
+      "min_lat": 45,
+      "max_lat": 65,
+      "min_lon": -5,
+      "max_lon": 25
+    }
   },
-
   "sampler_config": {
     "max_noise_level": 80.0,
     "min_noise_level": 0.03,
@@ -60,27 +79,27 @@
     "churn_max_noise_level": 80.0,
     "noise_level_inflation_factor": 1.05
   },
-
   "noise_config": {
     "training_noise_level_rho": 7.0,
     "training_max_noise_level": 88.0,
     "training_min_noise_level": 0.02
   },
-
   "noise_encoder_config": {
     "apply_log_first": true,
     "base_period": 16.0,
     "num_frequencies": 32,
-    "output_sizes": [32, 16]
+    "output_sizes": [
+      32,
+      16
+    ]
   },
-
   "denoiser_architecture_config": {
     "sparse_transformer_config": {
-      "attention_k_hop": 32,
-      "d_model": 512,
+      "attention_k_hop": 6,
+      "d_model": 128,
       "num_layers": 16,
       "num_heads": 4,
-      "attention_type": "splash_mha",
+      "attention_type": "mha",
       "mask_type": "lazy",
       "block_q": 1024,
       "block_kv": 512,
@@ -90,25 +109,24 @@
       "block_kv_dkv_compute": 1024,
       "ffw_winit_final_mult": 0.0,
       "attn_winit_final_mult": 0.0,
-      "ffw_hidden": 2048,
+      "ffw_hidden": 512,
       "name": null
     },
     "mesh_size": 6,
-    "latent_size": 512,
+    "latent_size": 128,
     "hidden_layers": 1,
-    "radius_query_fraction_edge_length": 0.6,
-    "norm_conditioning_features": ["noise_level_encodings"],
-    "grid2mesh_aggregate_normalization": null
+    "radius_query_fraction_edge_length": 0.6
   },
-
   "training_config": {
+    "run_name": "experiment_2_all_gencast_fixed",
+    "sampler_type": "fixed",
     "loss_function": "weighted_mse_per_level",
     "per_variable_weights": {
       "2m_temperature": 1.0,
       "10m_u_component_of_wind": 0.1,
       "10m_v_component_of_wind": 0.1,
       "mean_sea_level_pressure": 0.1,
-      "sea_surface_temperature": 0.01,
+      "sea_surface_temperature": 0.1,
       "total_precipitation_12hr": 0.1
     },
     "loss_area_weighting": true,
@@ -117,28 +135,35 @@
     "weight_decay": 0.1,
     "lr_decay_schedule": "cosine",
     "gradient_clip_norm": 1.0,
-    "batch_size": 32,
-
     "stage_1": {
       "description": "Pre-training at 1-degree resolution",
+      "batch_size": 32,
+      "grad_accum_steps": 1,
       "mesh_size": 5,
-      "learning_rate": 1e-3,
+      "learning_rate": 0.001,
       "warmup_steps": 1000,
-      "num_steps": 2000000
+      "num_steps": 40000
     },
     "stage_2": {
-      "description": "Fine-tuning at 0.25-degree resolution. Divide grid2mesh encoder message vectors by 16 before starting to avoid signal shock from the denser grid.",
+      "description": "Fine-tuning at 0.25-degree resolution.",
+      "batch_size": 32,
+      "grad_accum_steps": 1,
       "mesh_size": 6,
-      "learning_rate": 1e-4,
-      "warmup_steps": 5000,
-      "num_steps": 64000
+      "learning_rate": 0.0001,
+      "warmup_steps": 1000,
+      "num_steps": 16000
     },
-
-    "num_steps": 100000,
-    "learning_rate": 1e-4,
-    "num_epochs": 10,
-    "target_lead_times": "12h",
-    "training_time_start": null,
-    "training_time_end": null
+    "num_steps": 64000,
+    "learning_rate": 0.0001,
+    "num_epochs": 15,
+    "time_step": "12h",
+    "output_step": "12h",
+    "data_step": "6h",
+    "ar_steps": 1,
+    "stride": 1,
+    "training_time_start": "2005-01-01",
+    "training_time_end": "2019-12-31",
+    "validation_time_start": "2020-01-01",
+    "validation_time_end": "2020-12-31"
   }
 }

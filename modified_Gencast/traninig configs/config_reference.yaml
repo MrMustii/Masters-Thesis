@@ -1,0 +1,180 @@
+# Config Reference
+#
+# Explains every parameter used by the training/eval configs in this folder.
+# The configs themselves are JSON; this file is only documentation.
+#
+# See original_gencast.json for Google's untouched defaults, and the
+# experiment_2_*.json configs for the regional 12h-fixed / 6h-dataset setup.
+
+
+# ─────────────────────────────────────────────────────────────────────────
+task_config:              # what the model reads and predicts, and over what area
+# ─────────────────────────────────────────────────────────────────────────
+
+  input_variables:        # every field fed to the model at input time steps.
+                          # Includes surface vars, atmospheric vars, forcings and statics.
+  target_surface_variables:      # single-level fields the model predicts (e.g. 2m_temperature).
+  target_atmospheric_variables:  # pressure-level fields the model predicts (e.g. temperature, geopotential).
+                                 # Empty list [] = surface-only model.
+  forcing_variables:      # known-in-advance inputs supplied at target time too (solar/time signals).
+                          # year_progress_sin/cos, day_progress_sin/cos are derived on the fly.
+  static_variables:       # time-invariant fields (geopotential_at_surface, land_sea_mask).
+                          # Informational grouping — not a TaskConfig field.
+
+  pressure_levels:        # list of hPa levels kept for atmospheric vars, e.g. [850] or the full 13.
+                          # [] = no atmospheric levels (surface-only).
+  input_duration:         # total span of the input window, e.g. "24h".
+                          # num_inputs = input_duration / time_step  (24h / 12h = 2 input frames).
+  boundary_margin_degrees:# width (deg) of the regional boundary band that BoundaryForcedPredictor
+                          # overwrites with ground truth each step. 0/absent = no boundary forcing.
+  region:                 # lat/lon crop for regional training. null = global.
+    min_lat:              # southern edge (deg)
+    max_lat:              # northern edge (deg)
+    min_lon:              # western edge (deg)
+    max_lon:              # eastern edge (deg)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+sampler_config:           # diffusion noise schedule used at INFERENCE (denoising loop)
+# ─────────────────────────────────────────────────────────────────────────
+
+  max_noise_level:        # highest sigma the sampler starts from (80.0).
+  min_noise_level:        # lowest sigma the sampler ends at (0.03).
+  num_noise_levels:       # number of denoising steps between max and min (20).
+  rho:                    # curvature of the (Karras) sigma schedule; higher packs steps near low noise (7.0).
+  stochastic_churn_rate:  # amount of extra noise re-injected each step (Sr in EDM). 0 = deterministic (2.5).
+  churn_min_noise_level:  # only apply churn above this sigma (0.75).
+  churn_max_noise_level:  # only apply churn below this sigma (inf in Google default; 80.0 here).
+  noise_level_inflation_factor:  # >1 slightly inflates the target sigma when churning (1.05).
+
+
+# ─────────────────────────────────────────────────────────────────────────
+noise_config:             # diffusion noise schedule used at TRAINING (sigma sampled per example)
+# ─────────────────────────────────────────────────────────────────────────
+
+  training_noise_level_rho:   # rho of the log-normal-ish training sigma distribution (7.0).
+  training_max_noise_level:   # upper clip on the training sigma (88.0).
+  training_min_noise_level:   # lower clip on the training sigma (0.02).
+
+
+# ─────────────────────────────────────────────────────────────────────────
+noise_encoder_config:     # how a scalar sigma is turned into a conditioning vector (Fourier features + MLP)
+# ─────────────────────────────────────────────────────────────────────────
+
+  apply_log_first:        # take log(sigma) before Fourier encoding (true).
+  base_period:            # base period of the Fourier features (16.0).
+  num_frequencies:        # number of Fourier frequencies (32).
+  output_sizes:           # MLP layer widths after the Fourier features ([32, 16]).
+
+
+# ─────────────────────────────────────────────────────────────────────────
+lead_time_encoder_config: # OPTIONAL — only for sampler_type "variable" (lead-time conditioning).
+# ─────────────────────────────────────────────────────────────────────────  Absent = no lead-time conditioning.
+
+  max_horizon_hours:      # longest lead time the variable sampler may draw (e.g. 240.0).
+  num_frequencies:        # Fourier frequencies for encoding the lead time (32).
+  output_sizes:           # MLP widths after the Fourier features ([128, 128]).
+
+
+# ─────────────────────────────────────────────────────────────────────────
+denoiser_architecture_config:   # the GNN + sparse-transformer denoiser
+# ─────────────────────────────────────────────────────────────────────────
+
+  mesh_size:              # icosahedral mesh refinement level of the denoiser (6 at 0.25deg).
+  latent_size:            # width of GNN node/edge latents (512 in Google's; 128 here).
+  hidden_layers:          # MLP hidden layers inside the GNN blocks (1).
+  radius_query_fraction_edge_length:  # grid2mesh connection radius as a fraction of mesh edge length (0.6).
+  norm_conditioning_features:  # which encodings modulate the norm layers
+                               # (["noise_level_encodings"]; add "lead_time_encodings" for variable).
+  grid2mesh_aggregate_normalization:  # optional fixed normalizer for grid->mesh aggregation (null).
+
+  sparse_transformer_config:   # the transformer that runs on the mesh
+    attention_k_hop:      # mesh neighbourhood (hops) each node attends over (4).
+    d_model:              # transformer model width (512 in Google's; 128 here).
+    num_layers:           # number of transformer blocks (16).
+    num_heads:            # attention heads (4).
+    attention_type:       # "splash_mha" (TPU only) or "mha" (GPU — used here).
+    mask_type:            # attention mask construction ("lazy").
+    block_q:              # splash_mha only: query block size (1024).
+    block_kv:             # splash_mha only: key/value block size (512).
+    block_kv_compute:     # splash_mha only: kv compute block (256).
+    block_q_dkv:          # splash_mha only: query block for dkv pass (512).
+    block_kv_dkv:         # splash_mha only: kv block for dkv pass (1024).
+    block_kv_dkv_compute: # splash_mha only: kv compute block for dkv pass (1024).
+    ffw_winit_final_mult: # final-layer init scale for the feed-forward block (0.0).
+    attn_winit_final_mult:# final-layer init scale for the attention block (0.0).
+    ffw_hidden:           # feed-forward hidden width (2048 in Google's; 512 here).
+    name:                 # optional module name (null).
+
+
+# ─────────────────────────────────────────────────────────────────────────
+training_config:          # the training run itself (data windows, optimiser, schedule)
+# ─────────────────────────────────────────────────────────────────────────
+
+  run_name:               # checkpoint / wandb run name (experiment_2_<variant>_fixed).
+  sampler_type:           # "fixed"  -> FixedLeadTimeSampler (single lead time each example)
+                          # "variable" -> VariableLeadTimeSampler (lead drawn per batch; needs lead_time_encoder_config).
+
+  # --- temporal layout (all hours; how the window is cut from the store) ---
+  time_step:              # spacing between the model's input frames, e.g. "12h".
+  output_step:            # spacing from the last input to the (first) target. Defaults to time_step.
+  data_step:              # native cadence of the ERA5 store on disk, e.g. "6h" = a 6-hour dataset.
+                          # output_step must be a multiple of data_step. Offsets map to store
+                          # indices by dividing by data_step (12h target on a 6h store = 2 indices).
+  ar_steps:               # number of autoregressive target steps (num_output). 1 = single-step training;
+                          # targets are at last_input + k*output_step for k = 1..ar_steps.
+  stride:                 # step between successive training windows, in STORE INDICES (not hours).
+                          # With data_step "6h": stride 1 = a new window every 6h; stride 2 = every 12h.
+
+  # --- loss ---
+  loss_function:          # "weighted_mse_per_level".
+  per_variable_weights:   # per-variable loss weights; any target NOT listed defaults to weight 1.0.
+  loss_area_weighting:    # weight each grid cell by its cos(lat) area (true).
+  loss_noise_level_weighting:  # weight the loss by the diffusion noise level (true).
+
+  # --- optimiser / schedule (top-level fallback; stages can override) ---
+  optimizer:              # "adamw" | "adam".
+  weight_decay:           # AdamW weight decay (0.1).
+  lr_decay_schedule:      # "cosine" | null.
+  gradient_clip_norm:     # global grad-norm clip (1.0).
+  learning_rate:          # peak LR when a stage does not set its own (1e-4).
+  num_steps:              # total optimiser steps when not driven by the stages (64000).
+  num_epochs:             # epochs to run (15).
+
+  # --- data time ranges ---
+  training_time_start:    # first date of the training store (e.g. "2005-01-01").
+  training_time_end:      # last date of the training store (e.g. "2019-12-31").
+  validation_time_start:  # first date of the validation store; omit to skip validation.
+  validation_time_end:    # last date of the validation store.
+
+  # --- two-stage curriculum (GenCast pre-train then fine-tune) ---
+  stage_1:                # pre-training at 1-degree resolution (grid subsampled by 4).
+    description:          # human note.
+    batch_size:           # examples per optimiser step.
+    grad_accum_steps:     # micro-batches accumulated before an update (effective batch = batch_size * this).
+    mesh_size:            # mesh refinement for this stage (5 at 1deg).
+    learning_rate:        # peak LR for this stage (1e-3).
+    warmup_steps:         # linear LR warmup steps (1000).
+    num_steps:            # optimiser steps in this stage.
+  stage_2:                # fine-tuning at 0.25-degree resolution.
+    description:
+    batch_size:
+    grad_accum_steps:
+    mesh_size:            # 6 at 0.25deg.
+    learning_rate:        # 1e-4.
+    warmup_steps:         # 5000.
+    num_steps:
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# experiment_2_*.json — held fixed across all five, differ ONLY in vars/levels
+# ─────────────────────────────────────────────────────────────────────────
+#   region        : min_lat 40, max_lat 70, min_lon -10, max_lon 30
+#   sampler_type  : "fixed"
+#   time_step     : "12h"   output_step "12h"   data_step "6h"   stride 1   ar_steps 1
+#
+#   all_gencast : full GenCast inputs/targets, pressure_levels = 13 full levels
+#   temp850     : 2m_temperature + temperature, pressure_levels [850]
+#   temp1000    : 2m_temperature + temperature, pressure_levels [1000]
+#   z700        : 2m_temperature + geopotential, pressure_levels [700]
+#   z500        : 2m_temperature + geopotential, pressure_levels [500]

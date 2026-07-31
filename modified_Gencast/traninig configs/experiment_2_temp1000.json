@@ -1,0 +1,134 @@
+{
+  "task_config": {
+    "input_variables": [
+      "2m_temperature",
+      "temperature",
+      "year_progress_sin",
+      "year_progress_cos",
+      "day_progress_sin",
+      "day_progress_cos",
+      "geopotential_at_surface",
+      "land_sea_mask"
+    ],
+    "target_surface_variables": [
+      "2m_temperature"
+    ],
+    "target_atmospheric_variables": [
+      "temperature"
+    ],
+    "forcing_variables": [
+      "year_progress_sin",
+      "year_progress_cos",
+      "day_progress_sin",
+      "day_progress_cos"
+    ],
+    "static_variables": [
+      "geopotential_at_surface",
+      "land_sea_mask"
+    ],
+    "pressure_levels": [
+      1000
+    ],
+    "boundary_margin_degrees": 8.5,
+    "input_duration": "24h",
+    "region": {
+      "min_lat": 45,
+      "max_lat": 65,
+      "min_lon": -5,
+      "max_lon": 25
+    }
+  },
+  "sampler_config": {
+    "max_noise_level": 80.0,
+    "min_noise_level": 0.03,
+    "num_noise_levels": 20,
+    "rho": 7.0,
+    "stochastic_churn_rate": 2.5,
+    "churn_min_noise_level": 0.75,
+    "churn_max_noise_level": 80.0,
+    "noise_level_inflation_factor": 1.05
+  },
+  "noise_config": {
+    "training_noise_level_rho": 7.0,
+    "training_max_noise_level": 88.0,
+    "training_min_noise_level": 0.02
+  },
+  "noise_encoder_config": {
+    "apply_log_first": true,
+    "base_period": 16.0,
+    "num_frequencies": 32,
+    "output_sizes": [
+      32,
+      16
+    ]
+  },
+  "denoiser_architecture_config": {
+    "sparse_transformer_config": {
+      "attention_k_hop": 6,
+      "d_model": 128,
+      "num_layers": 16,
+      "num_heads": 4,
+      "attention_type": "mha",
+      "mask_type": "lazy",
+      "block_q": 1024,
+      "block_kv": 512,
+      "block_kv_compute": 256,
+      "block_q_dkv": 512,
+      "block_kv_dkv": 1024,
+      "block_kv_dkv_compute": 1024,
+      "ffw_winit_final_mult": 0.0,
+      "attn_winit_final_mult": 0.0,
+      "ffw_hidden": 512,
+      "name": null
+    },
+    "mesh_size": 6,
+    "latent_size": 128,
+    "hidden_layers": 1,
+    "radius_query_fraction_edge_length": 0.6
+  },
+  "training_config": {
+    "run_name": "experiment_2_temp1000_fixed",
+    "sampler_type": "fixed",
+    "loss_function": "weighted_mse_per_level",
+    "per_variable_weights": {
+      "2m_temperature": 1.0,
+      "temperature": 1.0
+    },
+    "loss_area_weighting": true,
+    "loss_noise_level_weighting": true,
+    "optimizer": "adamw",
+    "weight_decay": 0.1,
+    "lr_decay_schedule": "cosine",
+    "gradient_clip_norm": 1.0,
+    "stage_1": {
+      "description": "Pre-training at 1-degree resolution",
+      "batch_size": 32,
+      "grad_accum_steps": 1,
+      "mesh_size": 5,
+      "learning_rate": 0.001,
+      "warmup_steps": 1000,
+      "num_steps": 40000
+    },
+    "stage_2": {
+      "description": "Fine-tuning at 0.25-degree resolution.",
+      "batch_size": 32,
+      "grad_accum_steps": 1,
+      "mesh_size": 6,
+      "learning_rate": 0.0001,
+      "warmup_steps": 1000,
+      "num_steps": 16000
+    },
+    "num_steps": 64000,
+    "learning_rate": 0.0001,
+    "num_epochs": 15,
+    "time_step": "12h",
+    "output_step": "12h",
+    "data_step": "6h",
+    "ar_steps": 1,
+    "stride": 1,
+    "training_time_start": "2005-01-01",
+    "training_time_end": "2019-12-31",
+    "validation_time_start": "2020-01-01",
+    "validation_time_end": "2020-12-31"
+  }
+}
