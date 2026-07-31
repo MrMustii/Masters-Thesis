@@ -18,7 +18,7 @@ except ImportError:
     CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "traninig configs")
     print(f"Warning: Could not import CONFIGS_DIR. Falling back to: {CONFIGS_DIR}")
 
-from modified_Gencast.data_loaders import GENCAST_LEVELS, get_loading_region, bucket_name, load, lumio
+from modified_Gencast.lumio_buckets import GENCAST_LEVELS, get_loading_region, bucket_name, load, lumio
 
 TARGET_VAR = "2m_temperature"
 REFERENCE_START_YEAR = 2005
@@ -61,8 +61,6 @@ def main():
                       dashboard_address=None, memory_limit="11GB") as cluster, Client(cluster):
         print(f"[{store_bucket}] Dask cluster up; averaging {number_of_years} years over {HOURS_PER_YEAR} slots")
         started_at = time.time()
-        # Mean over the years that share each hour-of-year slot, then split the
-        # 8760-long slot axis into (dayofyear 1..365, hour 0..23).
         climatology = hourly.groupby("hour_of_year").mean("time")
         climatology = climatology.assign_coords(
             dayofyear=("hour_of_year", (np.arange(HOURS_PER_YEAR) // 24) + 1),

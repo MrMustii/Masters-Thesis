@@ -4,3 +4,9 @@ __pycache__/
 *.sif
 *.zarr
 wandb/*
+logs/*
+figs/*/*
+.claude
+
+# one-off data-layer build scripts (kept local, not versioned)
+modified_Gencast/build_*.py

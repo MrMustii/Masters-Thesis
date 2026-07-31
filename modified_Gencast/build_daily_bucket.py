@@ -1,15 +1,4 @@
-#!/usr/bin/env python3
-"""Build the daily-statistics bucket from the hourly store.
-
-For every time-dependent variable in the hourly store, computes per-day mean,
-max, and min (over the 24 hourly steps of each day) and stores them as
-<variable>_daily_mean / _daily_max / _daily_min in a "-daily" bucket next to
-the hourly one. All 13 GenCast levels are kept; level subsets are applied on
-read, like everywhere else. Resumable: already-stored days are skipped.
-
-Usage:
-    python modified_Gencast/build_daily_bucket.py
-"""
+import argparse
 import json
 import os
 import sys
@@ -29,7 +18,7 @@ except ImportError:
     CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "traninig configs")
     print(f"Warning: Could not import CONFIGS_DIR. Falling back to: {CONFIGS_DIR}")
 
-from modified_Gencast.data_loaders import (
+from modified_Gencast.lumio_buckets import (
     DOWNLOAD_TIME_CHUNK, GENCAST_LEVELS, get_loading_region, bucket_name, load, lumio, missing_data,
 )
 
@@ -38,12 +27,20 @@ SEGMENT_DAYS = 4 * DOWNLOAD_TIME_CHUNK  # multiples of the write chunk keep appe
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Build (or extend) the daily-statistics bucket.")
+    parser.add_argument("--start-date", type=str, default=None,
+                        help="Override start (YYYY-MM-DD); defaults to the config's earliest train/val date.")
+    parser.add_argument("--end-date", type=str, default=None,
+                        help="Override end (YYYY-MM-DD); defaults to the config's latest train/val date. "
+                             "Pass a test year (e.g. 2021) to append it; already-stored days are skipped.")
+    args = parser.parse_args()
+
     # Region and time span are shared across all experiment configs; read them from all_gencast.
     reference = json.load(open(os.path.join(CONFIGS_DIR, "experiment_2_all_gencast.json")))
     training_config = reference["training_config"]
     region = get_loading_region(reference["task_config"])
-    time_start = min(training_config["training_time_start"], training_config.get("validation_time_start", training_config["training_time_start"]))
-    time_end = max(training_config["training_time_end"], training_config.get("validation_time_end", training_config["training_time_end"]))
+    time_start = args.start_date or min( training_config.get("validation_time_start", training_config["training_time_start"]))
+    time_end = args.end_date or max( training_config.get("validation_time_end", training_config["training_time_end"]))
 
     print(f"[daily] Opening hourly store {time_start} → {time_end} ...")
     hourly = load(time_start, time_end, region=region, freq="1h")
@@ -100,7 +97,7 @@ def main():
                 daily_segment.to_zarr(store, mode="w-", consolidated=True)
                 store_is_empty = False
             else:
-                daily_segment.to_zarr(store, mode="a", append_dim="time", consolidated=True)
+                daily_segment.to_zarr(store, mode="a", append_dim="time", consolidated=True, align_chunks=True)
             average_seconds = (time.time() - started_at) / (segment_index + 1)
             remaining_minutes = average_seconds * (len(segments) - segment_index - 1) / 60
             print(
