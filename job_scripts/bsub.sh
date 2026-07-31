@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=run_notebook
 #SBATCH --account=project_465002687
-#SBATCH --time=10:00:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-task=1
-#SBATCH --mem=320G
+#SBATCH --mem=32G
 #SBATCH --partition=small-g
 #SBATCH --output=output_%x_%j.out
 #SBATCH --error=error_%x_%j.err
@@ -40,11 +40,11 @@ MODEL="modified"
 # rm -rf /scratch/project_465002687/data/era5/wb2_${START_DATE}_${END_DATE}_6h_0.25deg.zarr
 # echo "Dataset deleted."
 
-srun singularity exec \
-    --bind $PWD:$PWD,/scratch/project_465002687:/scratch/project_465002687 \
-    --env WANDB_API_KEY="$WANDB_API_KEY" \
-    containers/container.sif \
-    python -u modified_Gencast/training_test.py
+# srun singularity exec \
+#     --bind $PWD:$PWD,/scratch/project_465002687:/scratch/project_465002687 \
+#     --env WANDB_API_KEY="$WANDB_API_KEY" \
+#     containers/container.sif \
+#     python -u modified_Gencast/training_test.py
 
 # srun singularity exec \
 #     --bind $PWD:$PWD,/scratch/project_465002687:/scratch/project_465002687 \
@@ -53,3 +53,8 @@ srun singularity exec \
 #         --model-path /scratch/project_465002687/checkpoints/epoch_015.npz \
 #         --start-date 2020-04-09 \
 #         --end-date 2020-04-16
+
+srun singularity exec \
+    --bind $PWD:$PWD,/scratch/project_465002687:/scratch/project_465002687 \
+    containers/my_new_container2.sif \
+    python -u modified_Gencast/data_loaders.py
