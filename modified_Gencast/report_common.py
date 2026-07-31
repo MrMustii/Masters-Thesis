@@ -7,25 +7,30 @@ import xarray as xr
 from modified_Gencast.lumio_buckets import lumio, load, bucket_name, GENCAST_LEVELS
 from modified_Gencast.metrics import (
     TARGET_VAR, spatial_errors, mean_forecast, temporal_autocorrelation,
-    seasonal_errors, power_spectra_1d, mean_temporal_difference,
-    crps, spread_skill_ratio, rank_histogram, ensemble_power_spectra_1d,
-    binary_classification_metrics,
+    power_spectra_1d, mean_temporal_difference,
+    crps, crps_field, spread_skill_ratio, rank_histogram, ensemble_power_spectra_1d,
+    binary_classification_metrics, probabilistic_detection, rev,
+    tmax_quantile_bias, tail_ratio, conditional_rank_histogram,
 )
 from modified_Gencast.plots import (
     plot_temp_lead_curve, plot_temporal_errors, plot_hour_of_day_curves,
-    plot_spatial_error_maps, plot_seasonal_bias_maps,
+    plot_spatial_error_maps,
     plot_temporal_autocorrelation, plot_power_spectra, plot_mean_temporal_difference,
     plot_crps_growth, plot_spread_skill, plot_rank_histogram, plot_ensemble_power_spectra,
 )
 
 
 def prepare_datasets(predictions_ds, targets_ds, region):
-    """Squeeze the batch dim, crop to the region box, and detach from dask."""
-    if "batch" in predictions_ds.dims and predictions_ds.sizes["batch"] == 1:
-        predictions_ds = predictions_ds.squeeze("batch", drop=True)
-    if "batch" in targets_ds.dims and targets_ds.sizes["batch"] == 1:
-        targets_ds = targets_ds.squeeze("batch", drop=True)
+    """Squeeze batch dim, crop to region box, detach from dask."""
+    # drop singleton dims
+    for dim in list(predictions_ds.dims):
+        if predictions_ds.sizes[dim] == 1:
+            predictions_ds = predictions_ds.squeeze(dim, drop=True)
+    for dim in list(targets_ds.dims):
+        if targets_ds.sizes[dim] == 1:
+            targets_ds = targets_ds.squeeze(dim, drop=True)
 
+    # crop to the interior scoring box
     if region is not None:
         inner_lat = predictions_ds.lat.values[
             (predictions_ds.lat.values >= region[0]) & (predictions_ds.lat.values <= region[1])]
@@ -36,27 +41,28 @@ def prepare_datasets(predictions_ds, targets_ds, region):
         assert predictions_ds.sizes["lat"] > 0 and predictions_ds.sizes["lon"] > 0, \
             "Region crop produced an empty grid; check region/coord order."
 
+    # keep only TARGET_VAR, materialise to numpy (day-block ops can't run on dask)
     predictions_ds = xr.Dataset(
-        {name: xr.DataArray(np.asarray(predictions_ds[name].values), dims=predictions_ds[name].dims,
-                            coords=predictions_ds[name].coords) for name in predictions_ds.data_vars})
+        {TARGET_VAR: xr.DataArray(np.asarray(predictions_ds[TARGET_VAR].values),
+                                  dims=predictions_ds[TARGET_VAR].dims,
+                                  coords=predictions_ds[TARGET_VAR].coords)})
     targets_ds = xr.Dataset(
-        {name: xr.DataArray(np.asarray(targets_ds[name].values), dims=targets_ds[name].dims,
-                            coords=targets_ds[name].coords) for name in targets_ds.data_vars})
+        {TARGET_VAR: xr.DataArray(np.asarray(targets_ds[TARGET_VAR].values),
+                                  dims=targets_ds[TARGET_VAR].dims,
+                                  coords=targets_ds[TARGET_VAR].coords)})
     return predictions_ds, targets_ds
 
 
 def compute_common_metrics(predictions_ds, targets_ds, num_ensemble, base_attrs):
-    """Metrics every experiment reports for 2m temperature.
+    """Metrics every experiment reports for 2m temperature; caller always runs prepare_datasets() first."""
 
-    Returns (metrics_vars, metrics_attrs). The caller adds its experiment
-    specific entries and writes the combined dataset.
-    """
+    # resolution gate
     total_hours = int(predictions_ds[TARGET_VAR].sizes["hour"])
     hour_values = predictions_ds[TARGET_VAR].hour.values
     hour_spacing = int(np.median(np.diff(hour_values))) if total_hours > 1 else 24
     fine_time_resolution = hour_spacing <= 6 and total_hours >= 8
 
-
+    # RMSE / bias
     temp_spatial = spatial_errors(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR])
     rmse_ts_temp = temp_spatial["rmse"]
     bias_ts_temp = temp_spatial["bias"]
@@ -65,15 +71,15 @@ def compute_common_metrics(predictions_ds, targets_ds, num_ensemble, base_attrs)
     metrics_vars = {
         "rmse_map_temp": temp_spatial["rmse_map"], "bias_map_temp": temp_spatial["bias_map"],
         "rmse_ts_temp": rmse_ts_temp, "bias_ts_temp": bias_ts_temp,
-        "mse_series": temp_spatial["mse_series"],
     }
     metrics_attrs = dict(base_attrs)
 
+    # mean diurnal curve
     pred_diurnal = mean_forecast(predictions_ds[TARGET_VAR])
     tgt_diurnal = mean_forecast(targets_ds[TARGET_VAR])
-    seasonal_result = seasonal_errors(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR])
     metrics_vars.update({"mean_forecast_pred": pred_diurnal, "mean_forecast_tgt": tgt_diurnal})
 
+    # autocorrelation + power spectra
     if fine_time_resolution:
         pred_autocorr = temporal_autocorrelation(predictions_ds[TARGET_VAR])
         tgt_autocorr = temporal_autocorrelation(targets_ds[TARGET_VAR])
@@ -92,35 +98,64 @@ def compute_common_metrics(predictions_ds, targets_ds, num_ensemble, base_attrs)
     else:
         print(f"  Skipping autocorrelation/power spectra: {hour_spacing}h spacing over {total_hours} "
               f"leads is too coarse to resolve the diurnal cycle.")
-    for season, season_errors in seasonal_result.items():
-        if season_errors is None:
-            metrics_vars[f"seasonal_rmse_{season.lower()}"] = xr.full_like(rmse_ts_temp, fill_value=np.nan)
-        else:
-            metrics_vars[f"seasonal_rmse_{season.lower()}"] = season_errors["rmse"]
-            metrics_vars[f"seasonal_bias_map_{season.lower()}"] = season_errors["bias_map"]
 
+    # frame-to-frame difference (dX)
     if total_hours >= 2:
-        mtd_result = mean_temporal_difference(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR])
-        print(f"  Frame diff — Model: {float(mtd_result['pred'].mean()):.4f} K  "
-              f"ERA5: {float(mtd_result['target'].mean()):.4f} K")
+        mean_temporal_diff_result = mean_temporal_difference(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR])
+        print(f"  Frame diff — Model: {float(mean_temporal_diff_result['pred'].mean()):.4f} K  "
+              f"ERA5: {float(mean_temporal_diff_result['target'].mean()):.4f} K")
         metrics_vars.update({
-            "temporal_diff_pred": mtd_result["pred"], "temporal_diff_tgt": mtd_result["target"],
+            "temporal_diff_pred": mean_temporal_diff_result["pred"],
+            "temporal_diff_tgt": mean_temporal_diff_result["target"],
         })
 
+    # p90 tail threshold at each (init, lead) valid date
+    forecast_values = np.asarray(predictions_ds.forecast.values)
+    hour_values_1d = np.asarray(hour_values)
+    while forecast_values.ndim > 1 and forecast_values.shape[0] == 1:
+        forecast_values = forecast_values.squeeze(axis=0)
+    while hour_values_1d.ndim > 1 and hour_values_1d.shape[0] == 1:
+        hour_values_1d = hour_values_1d.squeeze(axis=0)
+    if forecast_values.ndim != 1:
+        raise ValueError(f"forecast coordinate must be 1D, got shape {forecast_values.shape}")
+    if hour_values_1d.ndim != 1:
+        raise ValueError(f"hour coordinate must be 1D, got shape {hour_values_1d.shape}")
+
+    forecast_index = pd.DatetimeIndex(forecast_values)
+    valid_times = forecast_index.values[:, None] + hour_values_1d.astype(int)[None, :] * np.timedelta64(1, "h")
+    valid_day_of_year = np.minimum(
+        pd.DatetimeIndex(valid_times.ravel()).dayofyear.values.reshape(valid_times.shape), 365)
+    day_of_year_da = xr.DataArray(valid_day_of_year, dims=["forecast", "hour"],
+                                  coords={"forecast": predictions_ds.forecast, "hour": predictions_ds[TARGET_VAR].hour})
+    tail_threshold = (load_p90_threshold().sel(dayofyear=day_of_year_da)
+                      .interp(lat=predictions_ds.lat, lon=predictions_ds.lon))
+
+    # CRPS + twCRPS
+    crps_result = crps(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR])
+    twcrps_result = crps(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR], threshold=tail_threshold)
+    print(f"  Mean CRPS: {float(crps_result['crps'].mean()):.4f} K"
+          f"  twCRPS: {float(twcrps_result['crps'].mean()):.4f} K")
+    metrics_vars.update({
+        "crps_map": crps_result["crps_map"], "crps_growth": crps_result["crps"],
+        "crps_series": crps_result["crps_series"], "crps_day1_series": crps_result["crps_day1_series"],
+        "twcrps_map": twcrps_result["crps_map"], "twcrps_growth": twcrps_result["crps"],
+        "twcrps_series": twcrps_result["crps_series"], "twcrps_day1_series": twcrps_result["crps_day1_series"],
+    })
+    metrics_attrs["crps_mean"] = float(crps_result["crps"].mean())
+    metrics_attrs["twcrps_mean"] = float(twcrps_result["crps"].mean())
+    metrics_attrs["crps_mean_day1"] = float(crps_result["crps_day1_series"].mean())
+    metrics_attrs["twcrps_mean_day1"] = float(twcrps_result["crps_day1_series"].mean())
+
+    # ensemble calibration
     if num_ensemble > 1:
-        crps_result = crps(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR])
         spread_skill_result = spread_skill_ratio(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR])
         rank_hist = rank_histogram(predictions_ds[TARGET_VAR], targets_ds[TARGET_VAR])
-        print(f"  Mean CRPS: {float(crps_result['crps'].mean()):.4f} K")
         print(f"  Mean SSR:  {float(spread_skill_result['ratio'].mean()):.4f}")
         metrics_vars.update({
-            "crps_map": crps_result["crps_map"], "crps_growth": crps_result["crps"],
-            "crps_series": crps_result["crps_series"],
             "spread_growth": spread_skill_result["spread"], "skill_growth": spread_skill_result["skill"],
             "spread_skill_ratio": spread_skill_result["ratio"],
             "rank_histogram": xr.DataArray(rank_hist, dims=["rank"], coords={"rank": np.arange(len(rank_hist))}),
         })
-        metrics_attrs["crps_mean"] = float(crps_result["crps"].mean())
         metrics_attrs["ssr_mean"] = float(spread_skill_result["ratio"].mean())
         if fine_time_resolution:
             ens_periods, ens_psd_mean, ens_psd_std = ensemble_power_spectra_1d(predictions_ds[TARGET_VAR])
@@ -134,15 +169,7 @@ def compute_common_metrics(predictions_ds, targets_ds, num_ensemble, base_attrs)
 
 def plot_common(metrics_vars, predictions_ds, targets_ds, plot_dir, tag,
                 region, num_ensemble, ar_window_hours, hour_axis, rmse_map_tmax=None):
-    """Draw the plots shared by every experiment.
-
-    `hour_axis` is "lead" for AR forecasts (exp2/exp3) and "hour_of_day" for the
-    daily reconstruction (exp4); it only changes the three line plots whose
-    x-axis meaning depends on it. `rmse_map_tmax` lets a report add its Tmax
-    RMSE map as a third panel on the shared spatial-error-maps plot instead of
-    drawing a second, overlapping figure. Heatwave / diurnal-shape plots belong
-    to the individual experiment reports.
-    """
+    """Plots shared by every experiment. hour_axis "lead" (AR) or "hour_of_day" (daily); rmse_map_tmax adds a Tmax panel."""
     rmse_ts_temp = metrics_vars["rmse_ts_temp"]
     bias_ts_temp = metrics_vars["bias_ts_temp"]
     rmse_map_temp = metrics_vars["rmse_map_temp"]
@@ -150,6 +177,7 @@ def plot_common(metrics_vars, predictions_ds, targets_ds, plot_dir, tag,
     lat = rmse_map_temp.lat.values
     lon = rmse_map_temp.lon.values
 
+    # lead / hour-of-day line plots
     if hour_axis == "hour_of_day":
         plot_hour_of_day_curves({"model": rmse_ts_temp}, "RMSE (K)", "2m temperature RMSE by hour of day",
                                 os.path.join(plot_dir, f"temporal_errors_{tag}.png"))
@@ -161,14 +189,11 @@ def plot_common(metrics_vars, predictions_ds, targets_ds, plot_dir, tag,
         plot_temporal_errors(rmse_ts_temp, bias_ts_temp,
                              os.path.join(plot_dir, f"temporal_errors_{tag}.png"), ar_window_hours=ar_window_hours)
 
+    # spatial maps
     plot_spatial_error_maps(rmse_map_temp.mean("hour"), bias_map_temp.mean("hour"), rmse_map_tmax,
                             lat, lon, plot_dir, tag, region=region)
 
-    seasonal_bias_maps = {name.split("seasonal_bias_map_")[1]: metrics_vars[name]
-                          for name in metrics_vars if name.startswith("seasonal_bias_map_")}
-    if seasonal_bias_maps:
-        plot_seasonal_bias_maps(seasonal_bias_maps, lat, lon, plot_dir, tag, region=region)
-
+    # autocorr / spectra / dX
     if "autocorr_pred" in metrics_vars:
         plot_temporal_autocorrelation(metrics_vars["autocorr_pred"], metrics_vars["autocorr_tgt"],
                                       os.path.join(plot_dir, f"autocorrelation_{tag}.png"))
@@ -181,6 +206,7 @@ def plot_common(metrics_vars, predictions_ds, targets_ds, plot_dir, tag,
         plot_mean_temporal_difference(metrics_vars["temporal_diff_pred"], metrics_vars["temporal_diff_tgt"],
                                       os.path.join(plot_dir, f"temporal_diff_{tag}.png"), ar_window_hours=ar_window_hours)
 
+    # ensemble diagnostics
     if num_ensemble > 1:
         if hour_axis == "hour_of_day":
             plot_hour_of_day_curves({"model": metrics_vars["crps_growth"]}, "CRPS (K)", "CRPS by hour of day",
@@ -197,14 +223,6 @@ def plot_common(metrics_vars, predictions_ds, targets_ds, plot_dir, tag,
                                         metrics_vars["psd_tgt"].period_hours.values, metrics_vars["psd_tgt"].values,
                                         os.path.join(plot_dir, f"ensemble_power_spectra_{tag}.png"))
 
-
-# == RQ1 Tmax + heatwave detection (shared by the 12h models: exp1, exp2) =======
-#
-# A 12h model only outputs 00Z and 12Z, so it cannot resolve the true afternoon
-# peak. The model daily Tmax proxy is max(00Z, 12Z) per calendar day; the TRUE
-# daily Tmax is the max over the 24 hourly ERA5 steps of the day. Detection is a
-# single-day exceedance of the climatological p90 threshold — no spell length or
-# duration (those need the multi-day horizons of exp3).
 
 def load_true_daily_tmax(start_date, end_date, loading_region, scoring_region):
     """True daily Tmax from hourly ERA5, on the scoring-region grid, indexed by day."""
@@ -235,9 +253,9 @@ def load_true_daily_tmax(start_date, end_date, loading_region, scoring_region):
 
 
 def load_p90_threshold():
-    """Climatological p90 Tmax threshold on its native grid, lon in [-180, 180)."""
-    clim_store = s3fs.S3Map(root="era5-lumi/historical_tmax", s3=lumio(), check=False)
-    threshold_p90 = xr.open_zarr(clim_store, consolidated=True)["tmax_p90"]
+    """Windowed p90 daily-Tmax threshold (±15-day, 1981-2010), built by build_tmax_threshold.py."""
+    climatology_store = s3fs.S3Map(root="era5-lumi/tmax_p90_windowed", s3=lumio(), check=False)
+    threshold_p90 = xr.open_zarr(climatology_store, consolidated=True)["tmax_p90"]
     if "latitude" in threshold_p90.dims:
         threshold_p90 = threshold_p90.rename({"latitude": "lat", "longitude": "lon"})
     if float(threshold_p90.lon.max()) > 180:
@@ -246,14 +264,8 @@ def load_p90_threshold():
 
 
 def score_daily_tmax(model_tmax, true_daily_tmax, threshold_p90, weights):
-    """Score a model daily Tmax field against the true daily Tmax and the p90 threshold.
-
-    `model_tmax` has dims (ensemble?, day, lat, lon); it is collapsed to the
-    ensemble median (deterministic detection). Returns Tmax RMSE/bias (map +
-    scalar), single-day heatwave-detection precision/recall/F1 (map + scalar),
-    and the aligned median/true fields for QQ plotting. Shared by exp1 (one
-    lead-agnostic field) and exp2 (one field per lead).
-    """
+    """Score a single daily-Tmax field vs true Tmax + p90: RMSE/bias + single-day detection P/R/F1. Used by exp1."""
+    # ensemble median + aligned truth/threshold
     if "ensemble" in model_tmax.dims:
         model_tmax = model_tmax.median("ensemble")
     model_days = pd.DatetimeIndex(model_tmax.day.values)
@@ -262,6 +274,7 @@ def score_daily_tmax(model_tmax, true_daily_tmax, threshold_p90, weights):
     day_of_year = xr.DataArray(model_days.dayofyear, dims="day", coords={"day": model_days})
     threshold = threshold_p90.sel(dayofyear=day_of_year).interp(lat=model_tmax.lat, lon=model_tmax.lon)
 
+    # RMSE/bias + weighted detection counts
     diff = model_tmax - true_tmax
     bias_map = diff.mean("day")
     model_exceed = (model_tmax > threshold).rename({"day": "forecast"}).expand_dims({"day_idx": [0]})
@@ -280,30 +293,49 @@ def score_daily_tmax(model_tmax, true_daily_tmax, threshold_p90, weights):
         "precision_map": detection["precision_map"], "recall_map": detection["recall_map"],
         "f1_map": detection["f1_map"], "precision": precision, "recall": recall, "f1": f1,
         "model_tmax": model_tmax, "true_tmax": true_tmax,
+        "counts_series": detection["counts_series"],
     }
 
 
-def compute_tmax_detection(temp_by_forecast_hour, true_daily_tmax, threshold_p90):
-    """Daily Tmax proxy and single-day heatwave detection as a function of lead DAY.
+def heatwave_tail_metrics(tmax_members, true_tmax, threshold):
+    """Tail + probabilistic heatwave diagnostics on a per-member daily-Tmax proxy. Shared by exp1/exp2."""
+    # quantile bias + tail ratio (deterministic-safe)
+    quantile_bias = tmax_quantile_bias(tmax_members, true_tmax)
+    tail = tail_ratio(tmax_members, true_tmax)
+    tail_vars = {"tmax_quantile_bias_map": quantile_bias["map"], "tail_ratio_map": tail["map"]}
+    tail_attrs = {f"tmax_qbias_{name}": value for name, value in quantile_bias["scalars"].items()}
+    tail_attrs.update({"tail_ratio": tail["ratio"], "tail_ratio_lower": tail["lower_gap_ratio"],
+                       "tail_ratio_upper": tail["upper_gap_ratio"]})
+    # Brier/BSS/AUC/reliability/REV/cond-rank-hist (ensemble only)
+    if "ensemble" in tmax_members.dims:
+        probabilistic = probabilistic_detection(tmax_members, true_tmax, threshold)
+        reliability_bins = np.arange(len(probabilistic["reliability_forecast"]))
+        tail_vars.update({
+            "hw_brier_map": probabilistic["brier_map"],
+            "reliability_forecast": xr.DataArray(probabilistic["reliability_forecast"],
+                                                 dims=["probability_bin"], coords={"probability_bin": reliability_bins}),
+            "reliability_observed": xr.DataArray(probabilistic["reliability_observed"],
+                                                 dims=["probability_bin"], coords={"probability_bin": reliability_bins}),
+            "reliability_count": xr.DataArray(probabilistic["reliability_count"],
+                                              dims=["probability_bin"], coords={"probability_bin": reliability_bins}),
+            "rev_curve": rev(tmax_members, true_tmax, threshold),
+        })
+        conditional_ranks = conditional_rank_histogram(tmax_members, true_tmax, threshold)
+        tail_vars["conditional_rank_histogram"] = xr.DataArray(
+            conditional_ranks, dims=["cond_rank"], coords={"cond_rank": np.arange(len(conditional_ranks))})
+        tail_attrs.update({"hw_brier": probabilistic["brier"], "hw_brier_skill_score": probabilistic["brier_skill_score"],
+                           "hw_auc": probabilistic["auc"], "hw_base_rate": probabilistic["base_rate"]})
+    return tail_vars, tail_attrs
 
-    A 12h fixed-step rollout has `hour` = a set of 12h leads spanning several days
-    (e.g. 12..168 h). This regroups them into (init, lead_day): the model daily
-    Tmax proxy for each lead day is max(00Z, 12Z) of that day, keeping only lead
-    days that carry both frames. Detection is single-day p90 exceedance;
-    binary_classification_metrics then gives precision/recall/F1 as curves over
-    lead day (day_idx) and as maps aggregated over all inits and lead days. Tmax
-    RMSE/bias are likewise reported vs lead day. Returns metric variables, scalar
-    attributes, and the pooled model/true Tmax arrays for the QQ plot.
-    """
+
+def compute_tmax_detection(temp_by_forecast_hour, true_daily_tmax, threshold_p90):
+    """exp2 daily-Tmax proxy max(00Z,12Z) + single-day detection as a function of lead DAY. Returns vars, attrs, QQ arrays."""
+    # regroup 12h leads into lead-days (keep days with both frames)
     temperature = temp_by_forecast_hour
-    if "ensemble" in temperature.dims:
-        temperature = temperature.median("ensemble")
     weights = xr.DataArray(np.cos(np.deg2rad(temperature.lat)), coords={"lat": temperature.lat})
     lead_hours = temperature.hour.values
     init_hours = pd.DatetimeIndex(temperature.forecast.values).hour
 
-    # hour -> lead_day depends only on the init hour, so split by init hour, group
-    # each subset onto lead_day, and keep the lead days that got both 00Z and 12Z.
     model_tmax_groups = []
     for init_hour in np.unique(init_hours):
         group = temperature.isel(forecast=(init_hours == init_hour))
@@ -313,7 +345,8 @@ def compute_tmax_detection(temp_by_forecast_hour, true_daily_tmax, threshold_p90
         group = group.assign_coords(lead_day=("hour", lead_day))
         model_tmax_groups.append(group.groupby("lead_day").max().sel(lead_day=full_days))
     common_lead_days = sorted(set.intersection(*[set(g.lead_day.values.tolist()) for g in model_tmax_groups]))
-    model_tmax = xr.concat([g.sel(lead_day=common_lead_days) for g in model_tmax_groups], dim="forecast")
+    model_tmax_members = xr.concat([g.sel(lead_day=common_lead_days) for g in model_tmax_groups], dim="forecast")
+    model_tmax = model_tmax_members.median("ensemble") if "ensemble" in model_tmax_members.dims else model_tmax_members
 
     # True daily Tmax and p90 threshold at each (init, lead_day)'s absolute date.
     init_dates = pd.DatetimeIndex(model_tmax.forecast.values).floor("D")
@@ -327,14 +360,35 @@ def compute_tmax_detection(temp_by_forecast_hour, true_daily_tmax, threshold_p90
         dims=["forecast", "lead_day"], coords={"forecast": model_tmax.forecast, "lead_day": lead_day_values})
     threshold = threshold_p90.sel(dayofyear=day_of_year).interp(lat=model_tmax.lat, lon=model_tmax.lon)
 
+    # Tmax-twCRPS (RQ1 primary ranking score)
+    clipped_members = np.maximum(model_tmax_members, threshold)
+    clipped_true = np.maximum(true_tmax, threshold)
+    tmax_twcrps_field = crps_field(clipped_members, clipped_true)  # (forecast, lead_day, lat, lon)
+    tmax_twcrps_series = tmax_twcrps_field.weighted(weights).mean(["lat", "lon", "lead_day"]).reset_coords(drop=True)
+    tmax_twcrps_mean = float(tmax_twcrps_field.weighted(weights).mean(["lat", "lon", "lead_day", "forecast"]))
+
+    # day-1 slice keyed by valid date (pairs against exp1)
+    day1_lead = int(lead_day_values.min())
+    day1_field = tmax_twcrps_field.sel(lead_day=day1_lead)  # (forecast, lat, lon)
+    day1_valid = pd.DatetimeIndex(model_tmax.forecast.values).floor("D") + pd.Timedelta(days=day1_lead)
+    tmax_twcrps_day1_series = (day1_field.weighted(weights).mean(["lat", "lon"])
+                               .reset_coords(drop=True).assign_coords(forecast=day1_valid.values))
+    tmax_twcrps_day1_mean = float(day1_field.weighted(weights).mean(["lat", "lon", "forecast"]))
+
+    # Tmax RMSE/bias vs lead day
     diff = model_tmax - true_tmax
     rmse_by_lead_day = np.sqrt((diff ** 2).weighted(weights).mean(["lat", "lon", "forecast"]))
     bias_map = diff.mean(["forecast", "lead_day"])
     rmse_map = np.sqrt((diff ** 2).mean(["forecast", "lead_day"]))
 
+    # detection P/R/F1 + tail metrics
     model_exceed = (model_tmax > threshold).rename({"lead_day": "day_idx"})
     true_exceed = (true_tmax > threshold).rename({"lead_day": "day_idx"})
     detection = binary_classification_metrics(model_exceed, true_exceed)
+    tail_vars, tail_attrs = heatwave_tail_metrics(
+        model_tmax_members.rename({"lead_day": "day_idx"}),
+        true_tmax.rename({"lead_day": "day_idx"}),
+        threshold.rename({"lead_day": "day_idx"}))
 
     metrics_vars = {
         "tmax_rmse_by_lead_day": rmse_by_lead_day, "tmax_rmse_map": rmse_map, "tmax_bias_map": bias_map,
@@ -342,14 +396,26 @@ def compute_tmax_detection(temp_by_forecast_hour, true_daily_tmax, threshold_p90
         "hw_f1_by_lead_day": detection["f1"],
         "hw_precision_map": detection["precision_map"], "hw_recall_map": detection["recall_map"],
         "hw_f1_map": detection["f1_map"],
+        "hw_tp_series": detection["counts_series"]["tp"], "hw_fp_series": detection["counts_series"]["fp"],
+        "hw_fn_series": detection["counts_series"]["fn"], "hw_tn_series": detection["counts_series"]["tn"],
+        "tmax_twcrps_series": tmax_twcrps_series,
+        "tmax_twcrps_day1_series": tmax_twcrps_day1_series,
     }
     metrics_attrs = {
         "tmax_rmse": float(rmse_by_lead_day.mean()),
+        "tmax_twcrps": tmax_twcrps_mean,
+        "tmax_twcrps_day1": tmax_twcrps_day1_mean,
         "hw_precision": float(detection["precision"].mean()),
         "hw_recall": float(detection["recall"].mean()),
         "hw_f1": float(detection["f1"].mean()),
     }
+    metrics_vars.update(tail_vars)
+    metrics_attrs.update(tail_attrs)
     print(f"  Lead days {list(map(int, lead_day_values))}: "
-          f"Tmax RMSE {metrics_attrs['tmax_rmse']:.3f} K  detection F1 {metrics_attrs['hw_f1']:.3f} "
-          f"(P {metrics_attrs['hw_precision']:.3f} R {metrics_attrs['hw_recall']:.3f})")
+          f"Tmax RMSE {metrics_attrs['tmax_rmse']:.3f} K  Tmax-twCRPS {tmax_twcrps_mean:.3f} K  "
+          f"detection F1 {metrics_attrs['hw_f1']:.3f} "
+          f"(P {metrics_attrs['hw_precision']:.3f} R {metrics_attrs['hw_recall']:.3f})"
+          + (f"  Brier {metrics_attrs['hw_brier']:.4f}  AUC {metrics_attrs['hw_auc']:.3f}"
+             if "hw_brier" in metrics_attrs else "")
+          + f"  tail-ratio {metrics_attrs['tail_ratio']:.3f}  q99-bias {metrics_attrs['tmax_qbias_q99']:+.3f} K")
     return metrics_vars, metrics_attrs, {"model_tmax": model_tmax, "true_tmax": true_tmax}

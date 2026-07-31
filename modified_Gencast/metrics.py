@@ -1,35 +1,24 @@
 import numpy as np
 import pandas as pd
 import xarray as xr
+import scoringrules as sr
 from scipy import stats
+from sklearn.metrics import roc_auc_score
+import scores.probability
 
 TARGET_VAR = "2m_temperature"
 
 
-def tmax_grid(dataset: xr.Dataset) -> xr.DataArray:
-    """Daily max of 2m_temperature over FULL 24-h day blocks only."""
-
-    data_array = dataset[TARGET_VAR]
+def drop_batch(data_array: xr.DataArray) -> xr.DataArray:
+    """Squeeze a singleton `batch` dimension if present."""
     if "batch" in data_array.dims and data_array.sizes["batch"] == 1:
-        data_array = data_array.squeeze("batch", drop=True)
+        return data_array.squeeze("batch", drop=True)
+    return data_array
 
-    # day-blocking assumes one shared lead-relative hour axis, identical
-    # across every forecast; if that ever broke, every day would be
-    # mis-blocked for every forecast but the first.
-    assert "forecast" not in data_array["hour"].dims, (
-        "hour must not depend on forecast; day-blocking assumes one shared lead-relative hour axis.")
-    hour_values = data_array.hour.values
-    day_idx_values = (hour_values - hour_values[0]) // 24
-    data_array = data_array.assign_coords(day_idx=("hour", day_idx_values))
-    # count hours per day_idx; keep only blocks with a full 24
-    
-    counts = xr.DataArray(
-        np.ones_like(day_idx_values), dims=["hour"],
-        coords={"hour": data_array.hour}
-    ).assign_coords(day_idx=("hour", day_idx_values)).groupby("day_idx").sum()
-    full_days = counts.where(counts == 24, drop=True).day_idx.values
-    tmax = data_array.groupby("day_idx").max()
-    return tmax.sel(day_idx=full_days)
+
+def cos_weights(data_array: xr.DataArray) -> xr.DataArray:
+    """Cosine-of-latitude area weights aligned to the array's lat coordinate."""
+    return xr.DataArray(np.cos(np.deg2rad(data_array.lat)), coords={"lat": data_array.lat})
 
 
 def _full_day_idx(hour_values: np.ndarray) -> np.ndarray:
@@ -68,19 +57,14 @@ def mean_forecast(data_array: xr.DataArray) -> xr.DataArray:
 def spatial_errors(pred: xr.DataArray, target: xr.DataArray) -> dict:
     """Spatial error maps (hour, lat, lon), averaged over forecast.
 
-    For ensemble: errors on ensemble mean. rmse/bias curves are cos-weighted;
-    mse_series is the per-initialization spatially averaged MSE used by the
-    block bootstrap.
+    For ensemble: errors on ensemble mean. rmse/bias curves are cos-weighted.
     """
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
+    pred = drop_batch(pred)
+    target = drop_batch(target)
     is_ensemble = "ensemble" in pred.dims
     pred_mean = pred.mean("ensemble") if is_ensemble else pred
     diff = pred_mean - target
-    weights = np.cos(np.deg2rad(pred_mean.lat))
-    w = xr.DataArray(weights, coords={"lat": pred_mean.lat})
+    w = cos_weights(pred_mean)
     rmse_map = np.sqrt((diff ** 2).mean("forecast"))
     bias_map = diff.mean("forecast")
     return {
@@ -88,7 +72,6 @@ def spatial_errors(pred: xr.DataArray, target: xr.DataArray) -> dict:
         "bias_map": bias_map,
         "rmse": np.sqrt((diff ** 2).weighted(w).mean(["lat", "lon"]).mean("forecast")),
         "bias": bias_map.weighted(w).mean(["lat", "lon"]),
-        "mse_series": (diff ** 2).weighted(w).mean(["lat", "lon"]).mean("hour"),
     }
 
 
@@ -99,8 +82,7 @@ def binary_classification_metrics(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -
 
     Takes boolean output of get_heatwaves(). pred_hw must be deterministic.
     """
-    weights = np.cos(np.deg2rad(tgt_hw.lat))
-    w = xr.DataArray(weights, coords={"lat": tgt_hw.lat})
+    w = cos_weights(tgt_hw)
 
     tp = (pred_hw & tgt_hw).sum("forecast")
     fp = (pred_hw & ~tgt_hw).sum("forecast")
@@ -116,9 +98,10 @@ def binary_classification_metrics(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -
     tp_s = tp.sum("day_idx")
     fp_s = fp.sum("day_idx")
     fn_s = fn.sum("day_idx")
-    precision_map = (tp_s / (tp_s + fp_s)).fillna(0)
-    recall_map = (tp_s / (tp_s + fn_s)).fillna(0)
-    f1_map = (2 * precision_map * recall_map / (precision_map + recall_map + 1e-12))
+    defined = (tp_s + fp_s + fn_s) > 0
+    precision_map = (tp_s / (tp_s + fp_s)).fillna(0).where(defined)
+    recall_map = (tp_s / (tp_s + fn_s)).fillna(0).where(defined)
+    f1_map = (2 * precision_map * recall_map / (precision_map + recall_map + 1e-12)).where(defined)
 
     counts_series = {
         "tp": (pred_hw & tgt_hw).astype(float).weighted(w).sum(["lat", "lon", "day_idx"]),
@@ -134,14 +117,13 @@ def binary_classification_metrics(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -
 
 
 def rev(pred_tmax, tgt_tmax, threshold, n_alpha: int = 99) -> xr.DataArray:
-    """Relative Economic Value over C/L in [0.01, 0.99]. Needs ensemble dim."""
+    """Relative Economic Value over C/L in [0.01, 0.99]. Needs ensemble dim; custom, unverified against scores.plotdata.rev_impl."""
     if "ensemble" not in pred_tmax.dims:
         raise ValueError("REV requires ensemble predictions.")
     M = pred_tmax.sizes["ensemble"]
     obs = (tgt_tmax > threshold).astype(float)
     prob = (pred_tmax > threshold).astype(float).mean("ensemble")
-    weights = np.cos(np.deg2rad(tgt_tmax.lat))
-    w = xr.DataArray(weights, coords={"lat": tgt_tmax.lat})
+    w = cos_weights(tgt_tmax)
     mu = float(obs.weighted(w).mean(["lat", "lon"]).mean())
     warning_rates = np.zeros(M + 2)
     miss_rates = np.zeros(M + 2)
@@ -172,8 +154,7 @@ def power_spectra_1d(data_array: xr.DataArray) -> tuple:
 def temporal_autocorrelation(data_array: xr.DataArray, max_lag: int = 48) -> xr.DataArray:
     spatial_dims = [d for d in ("lat", "lon") if d in data_array.dims]
     if spatial_dims:
-        weights = np.cos(np.deg2rad(data_array.lat))
-        w = xr.DataArray(weights, coords={"lat": data_array.lat})
+        w = cos_weights(data_array)
         data_array = data_array.weighted(w).mean(spatial_dims)
     n = data_array.sizes["hour"]
     max_lag = min(max_lag, n - 1)
@@ -191,42 +172,58 @@ def temporal_autocorrelation(data_array: xr.DataArray, max_lag: int = 48) -> xr.
     return xr.DataArray(ac_mean, dims=["lag"], coords={"lag": np.arange(max_lag + 1)})
 
 
-def crps(pred: xr.DataArray, target: xr.DataArray) -> dict:
+def crps_field(pred: xr.DataArray, target: xr.DataArray) -> xr.DataArray:
+    """Per-point CRPS field (fair ensemble form), before any aggregation.
+
+    Standalone (not inside crps) because the transformed scores need it too:
+    DTR-CRPS and HAT-CRPS score per-member TRANSFORMED ensembles (daily
+    amplitude, exceedance count) and exp1 scores an absolute-time axis with no
+    (forecast, hour) layout to aggregate over. Without an ensemble dim the
+    forecast is deterministic — the baselines — and CRPS collapses to the
+    absolute error, still the same proper score, so climatology/persistence/
+    interpolated-truth get a comparable crps_series instead of no CRPS at all.
+    """
+    pred = drop_batch(pred)
+    target = drop_batch(target)
     if "ensemble" not in pred.dims:
-        raise ValueError("CRPS requires ensemble predictions.")
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
-    mae_term = abs(pred - target).mean("ensemble")
-    M = pred.sizes["ensemble"]
-    ensemble_axis = list(pred.dims).index("ensemble")
-    sorted_vals = np.sort(pred.values, axis=ensemble_axis)
-    pairwise_w = (2 * np.arange(M) + 1 - M).astype(np.float32)
-    pairwise_w = pairwise_w.reshape([M if i == ensemble_axis else 1 for i in range(pred.values.ndim)])
-    energy_np = (2.0 / (M * (M - 1))) * (pairwise_w * sorted_vals).sum(axis=ensemble_axis)
-    non_ensemble_dims = [d for d in pred.dims if d != "ensemble"]
-    non_ensemble_coords = {d: pred.coords[d] for d in non_ensemble_dims if d in pred.coords}
-    energy = xr.DataArray(energy_np, dims=non_ensemble_dims, coords=non_ensemble_coords)
-    crps_field = mae_term - 0.5 * energy
-    crps_map = crps_field.mean("forecast")
-    weights = np.cos(np.deg2rad(pred.lat))
-    w = xr.DataArray(weights, coords={"lat": pred.lat})
-    crps_growth = crps_field.weighted(w).mean(["lat", "lon"]).mean("forecast")
-    crps_series = crps_field.weighted(w).mean(["lat", "lon"]).mean("hour")
-    return {"crps_map": crps_map, "crps": crps_growth, "crps_series": crps_series}
+        return abs(pred - target)
+    # Ferro-2014 fair CRPS; preserve_dims="all" keeps every non-ensemble dim, so this
+    # returns the per-gridpoint field.
+    return scores.probability.crps_for_ensemble(
+        pred, target, ensemble_member_dim="ensemble", method="fair", preserve_dims="all")
+
+
+def crps(pred: xr.DataArray, target: xr.DataArray, threshold: xr.DataArray = None) -> dict:
+    """CRPS aggregates over (forecast, hour, lat, lon) fields.
+
+    With `threshold` this is the threshold-weighted CRPS via the chaining
+    function v(x) = max(x, threshold): members and observation are clipped at
+    the cell's day-of-year p90 before scoring, which keeps the score strictly
+    proper while weighting exactly the upper tail heatwaves live in (Allen et
+    al. 2025). Plain CRPS integrates the Brier score over ALL thresholds and
+    dilutes that tail.
+    """
+    if threshold is not None:
+        pred = np.maximum(pred, threshold)
+        target = np.maximum(target, threshold)
+    field = crps_field(pred, target)
+    crps_map = field.mean("forecast")
+    w = cos_weights(target)
+    crps_growth = field.weighted(w).mean(["lat", "lon"]).mean("forecast")
+    crps_series = field.weighted(w).mean(["lat", "lon"]).mean("hour")
+    day1_hours = field.hour.values < (field.hour.values.min() + 24)
+    crps_day1_series = field.isel(hour=day1_hours).weighted(w).mean(["lat", "lon", "hour"])
+    return {"crps_map": crps_map, "crps": crps_growth, "crps_series": crps_series,
+            "crps_day1_series": crps_day1_series}
 
 
 def spread_skill_ratio(pred: xr.DataArray, target: xr.DataArray) -> dict:
     if "ensemble" not in pred.dims:
         raise ValueError("Spread-skill ratio requires ensemble predictions.")
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
+    pred = drop_batch(pred)
+    target = drop_batch(target)
     M = pred.sizes["ensemble"]
-    weights = np.cos(np.deg2rad(pred.lat))
-    w = xr.DataArray(weights, coords={"lat": pred.lat})
+    w = cos_weights(pred)
     spread_growth = np.sqrt(
         pred.var("ensemble").weighted(w).mean(["lat", "lon"]).mean("forecast")
     ) * np.sqrt((M + 1) / (M - 1))
@@ -238,37 +235,25 @@ def spread_skill_ratio(pred: xr.DataArray, target: xr.DataArray) -> dict:
 
 
 def rank_histogram(pred: xr.DataArray, target: xr.DataArray) -> np.ndarray:
+    """Pooled, area-weighted Talagrand rank histogram via scores.probability.rank_histogram."""
     if "ensemble" not in pred.dims:
         raise ValueError("Rank histogram requires ensemble predictions.")
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
-    N = pred.sizes["ensemble"]
-    hist = np.zeros(N + 1, dtype=np.float64)
-    rng = np.random.default_rng(42)
-    dims_without_lat = [d for d in pred.dims if d != "lat"]
-    ens_axis = dims_without_lat.index("ensemble")
-    for i in range(pred.sizes["lat"]):
-        p = np.moveaxis(pred.isel(lat=i).values, ens_axis, 0)
-        t = target.isel(lat=i).values
-        strictly_below = (p < t[np.newaxis]).sum(axis=0)
-        tied = (p == t[np.newaxis]).sum(axis=0)
-        ranks = (strictly_below + rng.integers(0, tied + 1, size=strictly_below.shape)).ravel()
-        hist += np.bincount(ranks.astype(int), minlength=N + 1)
-    return hist / hist.sum()
+    pred = drop_batch(pred)
+    target = drop_batch(target)
+    w = cos_weights(pred)
+    histogram = scores.probability.rank_histogram(pred, target, "ensemble", reduce_dims="all", weights=w)
+    return histogram.values
 
 
 def ensemble_power_spectra_1d(pred: xr.DataArray) -> tuple:
+    """Ensemble-only sibling of power_spectra_1d, which targets/baselines still need."""
     if "ensemble" not in pred.dims:
         raise ValueError("Ensemble power spectra requires ensemble dim.")
     spatial_dims = [d for d in ("lat", "lon") if d in pred.dims]
     if spatial_dims:
-        weights = np.cos(np.deg2rad(pred.lat))
-        w = xr.DataArray(weights, coords={"lat": pred.lat})
+        w = cos_weights(pred)
         pred = pred.weighted(w).mean(spatial_dims)
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
+    pred = drop_batch(pred)
     n = pred.sizes["hour"]
     hour_vals = pred.hour.values
     dt_hours = float(hour_vals[1] - hour_vals[0]) if len(hour_vals) > 1 else 1.0
@@ -306,12 +291,9 @@ def heatwave_ks_statistic(pred_lengths: np.ndarray, tgt_lengths: np.ndarray) -> 
 
 
 def mean_temporal_difference(pred: xr.DataArray, target: xr.DataArray) -> dict:
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
-    weights = np.cos(np.deg2rad(pred.lat))
-    w = xr.DataArray(weights, coords={"lat": pred.lat})
+    pred = drop_batch(pred)
+    target = drop_batch(target)
+    w = cos_weights(pred)
     if "ensemble" in pred.dims:
         pred_abs_diff = abs(pred.diff("hour")).mean("ensemble")
     else:
@@ -322,40 +304,8 @@ def mean_temporal_difference(pred: xr.DataArray, target: xr.DataArray) -> dict:
     return {"pred": pred_curve, "target": tgt_curve}
 
 
-SEASONS = {"DJF": (12, 1, 2), "MAM": (3, 4, 5), "JJA": (6, 7, 8), "SON": (9, 10, 11)}
-
-
-def seasonal_errors(pred: xr.DataArray, target: xr.DataArray) -> dict:
-    """Per-season RMSE curves (hour,) and bias maps (lat, lon); bias is
-    reported as maps and by season rather than one scalar."""
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
-    forecast_months = pd.DatetimeIndex(pred.forecast.values).month
-    pred_mean = pred.mean("ensemble") if "ensemble" in pred.dims else pred
-    weights = np.cos(np.deg2rad(pred.lat))
-    w = xr.DataArray(weights, coords={"lat": pred.lat})
-    result = {}
-    for season, months in SEASONS.items():
-        mask = np.isin(forecast_months, months)
-        if not mask.any():
-            result[season] = None
-            continue
-        diff = pred_mean.isel(forecast=mask) - target.isel(forecast=mask)
-        result[season] = {
-            "rmse": np.sqrt((diff ** 2).weighted(w).mean(["lat", "lon"]).mean("forecast")),
-            "bias_map": diff.mean(["forecast", "hour"]),
-        }
-    return result
-
-
 def _day_blocked(da: xr.DataArray) -> xr.DataArray:
-    """Assign day_idx and keep only full 24-h day blocks (drops half days).
-
-    Shared chokepoint for DTR, asymmetry, peak-time, and hours-above-threshold
-    — all four assume one shared lead-relative hour axis, identical across
-    every forecast (see the assert below)."""
+    """Assign day_idx and keep only full 24-h day blocks; shared by every day-block metric."""
     assert "forecast" not in da["hour"].dims, (
         "hour must not depend on forecast; day-blocking assumes one shared lead-relative hour axis.")
     hv = da.hour.values
@@ -364,60 +314,72 @@ def _day_blocked(da: xr.DataArray) -> xr.DataArray:
     return da.where(da.day_idx >= 0, drop=True)
 
 
-def diurnal_shape_errors(pred: xr.DataArray, target: xr.DataArray, min_dtr: float = 1.0) -> dict:
-    """Metrics 6 and 8 from one shared set of per-day aggregates.
+def tmax_grid(dataset: xr.Dataset) -> xr.DataArray:
+    """Daily max of 2m_temperature over FULL 24-h day blocks only."""
+    return _day_blocked(drop_batch(dataset[TARGET_VAR])).groupby("day_idx").max()
 
-    DTR error: extremes taken per member, errors averaged afterwards (extremes
-    of the ensemble mean are biased low); pred_dtr/tgt_dtr returned for the
-    density scatter. Asymmetry index (mean - min)/(max - min): 0.5 symmetric,
-    below 0.5 the sharp-afternoon-peak shape; model minus truth, masked where
-    DTR < min_dtr since the index degenerates."""
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
-    pred_b = _day_blocked(pred)
-    tgt_b = _day_blocked(target)
-    pg = pred_b.groupby("day_idx")
-    tg = tgt_b.groupby("day_idx")
-    pred_max, pred_min, pred_avg = pg.max(), pg.min(), pg.mean()
-    tgt_max, tgt_min, tgt_avg = tg.max(), tg.min(), tg.mean()
+
+def diurnal_shape_errors(pred: xr.DataArray, target: xr.DataArray, min_dtr: float = 1.0) -> dict:
+    """DTR (daily max-min) and asymmetry ((mean-min)/(max-min)) shape, MAE diagnostic
+    + proper CRPS score each, plus every raw per-day value, from one day-block pass."""
+    pred = drop_batch(pred)
+    target = drop_batch(target)
+    pred_day_blocked = _day_blocked(pred)
+    target_day_blocked = _day_blocked(target)
+    pred_day_groups = pred_day_blocked.groupby("day_idx")
+    target_day_groups = target_day_blocked.groupby("day_idx")
+    pred_max, pred_min, pred_mean = pred_day_groups.max(), pred_day_groups.min(), pred_day_groups.mean()
+    tgt_max, tgt_min, tgt_mean = target_day_groups.max(), target_day_groups.min(), target_day_groups.mean()
     pred_dtr = pred_max - pred_min
     tgt_dtr = tgt_max - tgt_min
-    weights = np.cos(np.deg2rad(target.lat))
-    w = xr.DataArray(weights, coords={"lat": target.lat})
+    pred_asymmetry = ((pred_mean - pred_min) / pred_dtr).where(tgt_dtr >= min_dtr)
+    tgt_asymmetry = ((tgt_mean - tgt_min) / tgt_dtr).where(tgt_dtr >= min_dtr)
+    w = cos_weights(target)
 
     abs_dtr_diff = abs(pred_dtr - tgt_dtr)
     if "ensemble" in abs_dtr_diff.dims:
         abs_dtr_diff = abs_dtr_diff.mean("ensemble")
     dtr_curve = abs_dtr_diff.weighted(w).mean(["lat", "lon"]).mean("forecast")
 
-    pred_asymmetry = ((pred_avg - pred_min) / pred_dtr).where(pred_dtr >= min_dtr)
-    tgt_asymmetry = ((tgt_avg - tgt_min) / tgt_dtr).where(tgt_dtr >= min_dtr)
     asymmetry_diff = pred_asymmetry - tgt_asymmetry
     if "ensemble" in asymmetry_diff.dims:
         asymmetry_diff = asymmetry_diff.mean("ensemble")
     asymmetry_curve = asymmetry_diff.weighted(w).mean(["lat", "lon"]).mean("forecast")
+
+    dtr_crps_field = crps_field(pred_dtr, tgt_dtr)
+    dtr_crps_map = dtr_crps_field.mean(["forecast", "day_idx"])
+    dtr_crps_series_by_day = dtr_crps_field.weighted(w).mean(["lat", "lon"])
+    dtr_crps_series = dtr_crps_series_by_day.mean("day_idx")
+
+    asymmetry_crps_field = crps_field(pred_asymmetry, tgt_asymmetry)
+    asymmetry_crps_map = asymmetry_crps_field.mean(["forecast", "day_idx"])
+    asymmetry_crps_series_by_day = asymmetry_crps_field.weighted(w).mean(["lat", "lon"])
+    asymmetry_crps_series = asymmetry_crps_series_by_day.mean("day_idx")
+
     return {
-        "dtr_curve": dtr_curve,
-        "dtr_scalar": float(dtr_curve.mean()),
-        "pred_dtr": pred_dtr,
-        "tgt_dtr": tgt_dtr,
+        "pred_max": pred_max, "pred_min": pred_min, "pred_mean": pred_mean,
+        "tgt_max": tgt_max, "tgt_min": tgt_min, "tgt_mean": tgt_mean,
+        "pred_dtr": pred_dtr, "tgt_dtr": tgt_dtr,
+        "pred_asymmetry": pred_asymmetry, "tgt_asymmetry": tgt_asymmetry,
+        "dtr_curve": dtr_curve, "dtr_scalar": float(dtr_curve.mean()),
+        "dtr_crps_map": dtr_crps_map, "dtr_crps_series": dtr_crps_series,
+        "dtr_crps_series_by_day": dtr_crps_series_by_day,
+        "dtr_crps_scalar": float(dtr_crps_map.weighted(w).mean(["lat", "lon"])),
         "asymmetry_curve": asymmetry_curve,
         "asymmetry_map": asymmetry_diff.mean("forecast").mean("day_idx"),
         "asymmetry_scalar": float(abs(asymmetry_diff).weighted(w).mean(["lat", "lon"]).mean()),
+        "asymmetry_crps_map": asymmetry_crps_map, "asymmetry_crps_series": asymmetry_crps_series,
+        "asymmetry_crps_series_by_day": asymmetry_crps_series_by_day,
+        "asymmetry_crps_scalar": float(asymmetry_crps_map.weighted(w).mean(["lat", "lon"])),
     }
 
 
 def rmse_by_window_position(pred, target, ar_window_hours: int) -> xr.DataArray:
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
+    pred = drop_batch(pred)
+    target = drop_batch(target)
     pred_mean = pred.mean("ensemble") if "ensemble" in pred.dims else pred
     diff = pred_mean - target
-    weights = np.cos(np.deg2rad(pred_mean.lat))
-    w = xr.DataArray(weights, coords={"lat": pred_mean.lat})
+    w = cos_weights(pred_mean)
     rmse_per_hour = np.sqrt((diff ** 2).weighted(w).mean(["lat", "lon"]).mean("forecast"))
     total_hours = rmse_per_hour.sizes["hour"]
     positions = np.arange(total_hours) % ar_window_hours
@@ -432,74 +394,143 @@ def rmse_by_window_position(pred, target, ar_window_hours: int) -> xr.DataArray:
                         coords={"window_pos": np.arange(ar_window_hours)})
 
 
-def peak_time_error(pred: xr.DataArray, target: xr.DataArray) -> dict:
-    """Metric 7: placement of the daily maximum within the day, from the
-    ensemble mean, per full day block, with wraparound at midnight. Units
-    hours. Also returns the 24x24 joint histogram of predicted vs observed
-    peak hour-of-day (UTC) for the heatmap figure."""
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
-    pred_mean = pred.mean("ensemble") if "ensemble" in pred.dims else pred
-    pred_b = _day_blocked(pred_mean)
-    tgt_b = _day_blocked(target)
-    pred_peak_lead = pred_b.groupby("day_idx").map(
-        lambda block: block.hour.isel(hour=block.argmax("hour")).drop_vars(["hour", "day_idx"], errors="ignore"))
-    tgt_peak_lead = tgt_b.groupby("day_idx").map(
-        lambda block: block.hour.isel(hour=block.argmax("hour")).drop_vars(["hour", "day_idx"], errors="ignore"))
-    wrapped_delta = ((pred_peak_lead - tgt_peak_lead + 12) % 24) - 12
-    weights = np.cos(np.deg2rad(target.lat))
-    w = xr.DataArray(weights, coords={"lat": target.lat})
-    error_map = abs(wrapped_delta).mean(["forecast", "day_idx"])
-    bias_map = wrapped_delta.mean(["forecast", "day_idx"])
-    scalar = float(error_map.weighted(w).mean(["lat", "lon"]))
-    # Per-initialization series (area + day mean, keep the forecast dim) for the block bootstrap.
-    series = abs(wrapped_delta).weighted(w).mean(["lat", "lon", "day_idx"])
-    initialization_hours = xr.DataArray(
-        pd.DatetimeIndex(pred.forecast.values).hour, dims=["forecast"], coords={"forecast": pred.forecast})
-    pred_peak_hour_of_day = (initialization_hours + pred_peak_lead) % 24
-    tgt_peak_hour_of_day = (initialization_hours + tgt_peak_lead) % 24
-    heatmap_counts, _, _ = np.histogram2d(
-        tgt_peak_hour_of_day.values.ravel(), pred_peak_hour_of_day.values.ravel(),
-        bins=[np.arange(25), np.arange(25)])
-    heatmap = xr.DataArray(
-        heatmap_counts, dims=["observed_hour", "predicted_hour"],
-        coords={"observed_hour": np.arange(24), "predicted_hour": np.arange(24)})
-    return {"map": error_map, "bias_map": bias_map, "scalar": scalar,
-            "series": series, "peak_hour_heatmap": heatmap}
+def variogram_score(pred: xr.DataArray, target: xr.DataArray, order: float = 0.5) -> dict:
+    """Per-day temporal variogram score via scoringrules.vs_ensemble on the within-day 24h vector, w_ij = 1/|hour separation| normalised to sum 1."""
+    pred = drop_batch(pred)
+    target = drop_batch(target)
+    pred_blocked = _day_blocked(pred)
+    tgt_blocked = _day_blocked(target)
+    has_ensemble = "ensemble" in pred_blocked.dims
+
+    # reshape the hour axis into (day_idx, hour_of_day) so day_idx is a real dim and VS runs per day
+    hour_of_day = ((tgt_blocked.hour.values - tgt_blocked.hour.values[0]) % 24).astype(int)
+    pred_blocked = pred_blocked.assign_coords(hour_of_day=("hour", hour_of_day)).set_index(hour=["day_idx", "hour_of_day"]).unstack("hour")
+    tgt_blocked = tgt_blocked.assign_coords(hour_of_day=("hour", hour_of_day)).set_index(hour=["day_idx", "hour_of_day"]).unstack("hour")
+
+    # within-day pairwise weight matrix (24 x 24)
+    hours = tgt_blocked.hour_of_day.values
+    pair_distance = np.abs(hours[:, None] - hours[None, :])
+    pair_weight = np.where(pair_distance > 0, 1.0 / np.maximum(pair_distance, 1), 0.0)
+    pair_weight = pair_weight / pair_weight.sum()
+
+    batch_dims = [d for d in ("forecast", "day_idx", "lat", "lon") if d in tgt_blocked.dims]
+    tgt_values = tgt_blocked.transpose(*batch_dims, "hour_of_day").values
+    if has_ensemble:
+        pred_values = pred_blocked.transpose(*batch_dims, "ensemble", "hour_of_day").values
+    else:
+        pred_values = pred_blocked.transpose(*batch_dims, "hour_of_day").values[..., np.newaxis, :]
+    score_values = sr.vs_ensemble(tgt_values, pred_values, w=pair_weight, p=order)
+    field = xr.DataArray(score_values, dims=batch_dims,
+                         coords={d: tgt_blocked[d] for d in batch_dims})
+    w = cos_weights(target)
+    score_map = field.mean(["forecast", "day_idx"])
+    series_by_day_idx = field.weighted(w).mean(["lat", "lon"])
+    series = series_by_day_idx.mean("day_idx")
+    return {"map": score_map, "series": series, "series_by_day_idx": series_by_day_idx,
+            "scalar": float(score_map.weighted(w).mean(["lat", "lon"]))}
 
 
-def hours_above_threshold_error(pred: xr.DataArray, target: xr.DataArray, threshold: xr.DataArray) -> dict:
-    """Metric 15: within-day exceedance duration error — |hours above threshold
-    per day, model minus truth|, counted per member then averaged.
+def spatial_variogram_score(pred: xr.DataArray, target: xr.DataArray, order: float = 0.5,
+                            max_distance_deg: float = 5.0, normalize: bool = True) -> dict:
+    """Spatial variogram score of order p over grid-cell pairs, one value per
+    (forecast, hour). Scores the SPATIAL dependence structure — a field that is
+    too smooth (over-regularised, the failure a reduced variable set risks)
+    fails this even when it passes CRPS. That is why the variable-selection test
+    requires passing on both twCRPS and this.
 
-    "Threshold" here is the day's p90-of-DAILY-MAX-Tmax climatology value (the
-    same threshold get_heatwaves() uses), not an hourly climatological
-    percentile. That's a rarer bar than a typical hour clears, so counts are
-    small and concentrated near the daily peak by construction — read this as
-    "hours above the daily-Tmax p90", not "hours above a typical-hour p90".
+    Computed the efficient variogram way — loop over spatial lag vectors
+    (delta_lat, delta_lon) within `max_distance_deg`, shifting the field rather
+    than enumerating all O(cells^2) pairs. Weight 1 / great-circle-ish degree
+    distance, normalised to sum 1 (mandatory for cross-domain comparison).
+    Returns a per-forecast series (area over hour+lag) for the block bootstrap.
     """
-    if "batch" in pred.dims and pred.sizes["batch"] == 1:
-        pred = pred.squeeze("batch", drop=True)
-    if "batch" in target.dims and target.sizes["batch"] == 1:
-        target = target.squeeze("batch", drop=True)
-    pred_b = _day_blocked(pred)
-    tgt_b = _day_blocked(target)
-    pred_counts = pred_b.groupby("day_idx").map(
-        lambda block: (block > threshold.sel(day_idx=int(block.day_idx.values[0]))).sum("hour"))
-    tgt_counts = tgt_b.groupby("day_idx").map(
-        lambda block: (block > threshold.sel(day_idx=int(block.day_idx.values[0]))).sum("hour"))
-    count_error = abs(pred_counts - tgt_counts)
-    if "ensemble" in count_error.dims:
-        count_error = count_error.mean("ensemble")
-    weights = np.cos(np.deg2rad(target.lat))
-    w = xr.DataArray(weights, coords={"lat": target.lat})
-    error_map = count_error.mean(["forecast", "day_idx"])
-    scalar = float(error_map.weighted(w).mean(["lat", "lon"]))
-    # Per-initialization series (area + day mean, keep the forecast dim) for the block bootstrap.
-    series = count_error.weighted(w).mean(["lat", "lon", "day_idx"])
-    return {"map": error_map, "scalar": scalar, "series": series}
+    pred = drop_batch(pred)
+    target = drop_batch(target)
+    pred_mean = pred.mean("ensemble") if "ensemble" in pred.dims else pred
+    pred_mean = pred_mean.transpose("forecast", "hour", "lat", "lon")
+    target = target.transpose("forecast", "hour", "lat", "lon")
+    latitudes = target.lat.values
+    longitudes = target.lon.values
+    lat_step = float(np.abs(latitudes[1] - latitudes[0])) if len(latitudes) > 1 else 0.25
+    lon_step = float(np.abs(longitudes[1] - longitudes[0])) if len(longitudes) > 1 else 0.25
+    max_lat_shift = int(round(max_distance_deg / lat_step))
+    max_lon_shift = int(round(max_distance_deg / lon_step))
+
+    pred_values = pred_mean.values
+    tgt_values = target.values
+    num_lat, num_lon = tgt_values.shape[-2], tgt_values.shape[-1]
+    accumulated = np.zeros(pred_values.shape[:2])  # (forecast, hour)
+    weight_total = 0.0
+    for lat_shift in range(-max_lat_shift, max_lat_shift + 1):
+        for lon_shift in range(0, max_lon_shift + 1):
+            if lon_shift == 0 and lat_shift <= 0:
+                continue  # skip (0,0) and the mirror of the +lat / same-lon pairs
+            if abs(lat_shift) >= num_lat or lon_shift >= num_lon:
+                continue  # no overlapping cells at this lag (grid smaller than the shift)
+            distance = np.hypot(lat_shift * lat_step, lon_shift * lon_step)
+            if distance > max_distance_deg:
+                continue
+            pair_weight = 1.0 / distance
+            weight_total += pair_weight
+            # Overlapping cell (i, j) vs (i+lat_shift, j+lon_shift), valid indices only.
+            here_lat = slice(max(0, -lat_shift), num_lat - max(0, lat_shift))
+            shift_lat = slice(max(0, lat_shift), num_lat - max(0, -lat_shift))
+            here_lon, shift_lon = slice(0, num_lon - lon_shift), slice(lon_shift, num_lon)
+            tgt_term = np.abs(tgt_values[..., here_lat, here_lon]
+                              - tgt_values[..., shift_lat, shift_lon]) ** order
+            pred_term = np.abs(pred_values[..., here_lat, here_lon]
+                               - pred_values[..., shift_lat, shift_lon]) ** order
+            accumulated += pair_weight * ((tgt_term - pred_term) ** 2).mean(axis=(-2, -1))
+    if normalize and weight_total > 0:
+        accumulated /= weight_total
+    field = xr.DataArray(accumulated, dims=["forecast", "hour"],
+                         coords={"forecast": target.forecast, "hour": target.hour})
+    series = field.mean("hour")
+    return {"series": series, "scalar": float(series.mean())}
+
+
+def peak_time_ccrps(pred: xr.DataArray, target: xr.DataArray) -> dict:
+    """Peak-time error as a PROPER, rankable score: the argmax-hour transform
+    per member, then a CIRCULAR fair CRPS with the angular distance
+    alpha(a, b) = min(|a-b|, 24-|a-b|) as the (negative-definite) kernel.
+
+    cCRPS = mean_k alpha(theta_k, obs) - 1/(2M(M-1)) sum_{k!=l} alpha(theta_k, theta_l),
+    bounded by 12 h, proper because angular distance is a negative-definite
+    kernel (Gneiting 1998). Replaces the old argmax-of-the-ensemble-mean MAE,
+    which could not rank a probabilistic peak. Deterministic input scores the
+    single trajectory's angular distance to the observed peak."""
+    pred = drop_batch(pred)
+    target = drop_batch(target)
+    pred_peak = _day_blocked(pred).groupby("day_idx").map(
+        lambda block: block.hour.isel(hour=block.argmax("hour")).drop_vars(["hour", "day_idx"], errors="ignore"))
+    tgt_peak = _day_blocked(target).groupby("day_idx").map(
+        lambda block: block.hour.isel(hour=block.argmax("hour")).drop_vars(["hour", "day_idx"], errors="ignore"))
+    tgt_peak_hour = (tgt_peak % 24)
+    if "ensemble" in pred_peak.dims:
+        pred_hours = (pred_peak % 24).transpose("ensemble", ...)
+        member_axis = 0
+        angular_to_truth = np.minimum(np.abs(pred_hours - tgt_peak_hour),
+                                      24 - np.abs(pred_hours - tgt_peak_hour))
+        term_truth = angular_to_truth.mean("ensemble")
+        member_values = pred_hours.values
+        num_members = member_values.shape[member_axis]
+        pairwise = np.zeros(term_truth.shape)
+        for first_member in range(num_members):
+            for second_member in range(num_members):
+                if first_member == second_member:
+                    continue
+                difference = np.abs(member_values[first_member] - member_values[second_member])
+                pairwise += np.minimum(difference, 24 - difference)
+        spread = xr.DataArray(pairwise / (num_members * (num_members - 1)),
+                              dims=term_truth.dims, coords=term_truth.coords)
+        field = term_truth - 0.5 * spread
+    else:
+        pred_hour = pred_peak % 24
+        field = np.minimum(np.abs(pred_hour - tgt_peak_hour), 24 - np.abs(pred_hour - tgt_peak_hour))
+    w = cos_weights(target)
+    score_map = field.mean(["forecast", "day_idx"])
+    series = field.weighted(w).mean(["lat", "lon", "day_idx"])
+    return {"map": score_map, "series": series, "scalar": float(score_map.weighted(w).mean(["lat", "lon"]))}
 
 
 def event_bias(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
@@ -508,8 +539,7 @@ def event_bias(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
     duration bias, mean event length difference in days (negative truncates
     or fragments). Events are maximal flagged runs; the >= 3-day sieve is
     already applied by get_heatwaves."""
-    weights = np.cos(np.deg2rad(tgt_hw.lat))
-    w = xr.DataArray(weights, coords={"lat": tgt_hw.lat})
+    w = cos_weights(tgt_hw)
     padded_pred = pred_hw.astype(np.int8).pad(day_idx=(1, 0), constant_values=0)
     padded_tgt = tgt_hw.astype(np.int8).pad(day_idx=(1, 0), constant_values=0)
     pred_events = (padded_pred.diff("day_idx") == 1).sum(["day_idx", "forecast"])
@@ -526,14 +556,36 @@ def event_bias(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
     }
 
 
+def event_detection_rate(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
+    """Fraction of true sieved-heatwave EVENTS the model flags on at least one day, per cell and pooled."""
+    non_day_dims = [d for d in tgt_hw.dims if d != "day_idx"]
+    stacked_tgt = tgt_hw.stack(pixel=non_day_dims).transpose("pixel", "day_idx")
+    pixel_tgt = stacked_tgt.values.astype(np.int8)
+    pixel_pred = pred_hw.stack(pixel=non_day_dims).transpose("pixel", "day_idx").values.astype(np.int8)
+    num_pixels = pixel_tgt.shape[0]
+    padded = np.concatenate([np.zeros((num_pixels, 1), np.int8), pixel_tgt, np.zeros((num_pixels, 1), np.int8)], axis=1)
+    changes = np.diff(padded.astype(np.int16), axis=1)
+    rise_pixel, rise_day = np.where(changes == 1)
+    _, fall_day = np.where(changes == -1)
+    hits = np.array([bool(pixel_pred[pixel, start:end].any())
+                     for pixel, start, end in zip(rise_pixel, rise_day, fall_day)])
+    events_per_pixel = np.bincount(rise_pixel, minlength=num_pixels).astype(float)
+    hits_per_pixel = np.bincount(rise_pixel, weights=hits, minlength=num_pixels)
+    rate_per_pixel = np.divide(hits_per_pixel, events_per_pixel,
+                               out=np.full(num_pixels, np.nan), where=events_per_pixel > 0)
+    rate_map = xr.DataArray(rate_per_pixel, dims=["pixel"], coords={"pixel": stacked_tgt.pixel}).unstack("pixel")
+    if "forecast" in rate_map.dims:
+        rate_map = rate_map.mean("forecast")  # per-cell rate averaged over forecasts
+    return {"map": rate_map, "rate": float(hits.mean()) if len(hits) else float("nan"), "num_events": int(len(hits))}
+
+
 def conditional_tmax_errors(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
     """Metric 18: Tmax bias and RMSE only over day-cell pairs where the
     OBSERVED heatwave flag is true (conditioning on observation, not
     prediction). A conditional cold bias explains recall deficits.
     bias_series (forecast,) feeds the block bootstrap."""
     diff = (pred_tmax - tgt_tmax).where(tgt_hw)
-    weights = np.cos(np.deg2rad(tgt_tmax.lat))
-    w = xr.DataArray(weights, coords={"lat": tgt_tmax.lat})
+    w = cos_weights(tgt_tmax)
     bias = float(diff.weighted(w).mean(["lat", "lon", "day_idx", "forecast"]))
     rmse = float(np.sqrt((diff ** 2).weighted(w).mean(["lat", "lon", "day_idx", "forecast"])))
     bias_series = diff.weighted(w).mean(["lat", "lon", "day_idx"])
@@ -546,15 +598,134 @@ def tmax_quantile_bias(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray, quantile
     regression-to-the-mean signature. Pools members; quantiles of the ensemble
     mean would smooth the tail."""
     pred_pool_dims = [d for d in ("forecast", "day_idx", "ensemble") if d in pred_tmax.dims]
+    tgt_pool_dims = [d for d in ("forecast", "day_idx") if d in tgt_tmax.dims]
     pred_quantiles = pred_tmax.quantile(list(quantile_levels), dim=pred_pool_dims)
-    tgt_quantiles = tgt_tmax.quantile(list(quantile_levels), dim=["forecast", "day_idx"])
+    tgt_quantiles = tgt_tmax.quantile(list(quantile_levels), dim=tgt_pool_dims)
     delta_map = pred_quantiles - tgt_quantiles
-    weights = np.cos(np.deg2rad(tgt_tmax.lat))
-    w = xr.DataArray(weights, coords={"lat": tgt_tmax.lat})
+    w = cos_weights(tgt_tmax)
     scalars = {
         f"q{int(round(level * 100))}": float(delta_map.sel(quantile=level).weighted(w).mean(["lat", "lon"]))
         for level in quantile_levels
     }
     return {"map": delta_map, "scalars": scalars}
+
+
+def tail_ratio(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray,
+               low: float = 0.90, mid: float = 0.95, high: float = 0.99) -> dict:
+    """Tail THICKNESS, independent of bias: R = (Q99 - Q90)_model / (Q99 - Q90)_obs
+    per cell, from pooled daily Tmax. R < 1 = upper tail too compressed (squashed
+    extremes), R > 1 = too stretched. A uniformly cold model can still have R = 1;
+    quantile bias gives the tail's LOCATION, this gives its width. The two sub-gaps
+    (Q95-Q90, Q99-Q95) show where the compression sits."""
+    pred_pool = [d for d in ("forecast", "day_idx", "ensemble") if d in pred_tmax.dims]
+    tgt_pool = [d for d in ("forecast", "day_idx") if d in tgt_tmax.dims]
+    pred_quantiles = pred_tmax.quantile([low, mid, high], dim=pred_pool)
+    tgt_quantiles = tgt_tmax.quantile([low, mid, high], dim=tgt_pool)
+    pred_gap = pred_quantiles.sel(quantile=high) - pred_quantiles.sel(quantile=low)
+    tgt_gap = tgt_quantiles.sel(quantile=high) - tgt_quantiles.sel(quantile=low)
+    ratio_map = (pred_gap / tgt_gap).where(tgt_gap > 1e-6)
+    w = cos_weights(tgt_tmax)
+    lower_pred = pred_quantiles.sel(quantile=mid) - pred_quantiles.sel(quantile=low)
+    upper_pred = pred_quantiles.sel(quantile=high) - pred_quantiles.sel(quantile=mid)
+    lower_tgt = tgt_quantiles.sel(quantile=mid) - tgt_quantiles.sel(quantile=low)
+    upper_tgt = tgt_quantiles.sel(quantile=high) - tgt_quantiles.sel(quantile=mid)
+    return {
+        "map": ratio_map,
+        "ratio": float(ratio_map.weighted(w).mean(["lat", "lon"])),
+        "lower_gap_ratio": float((lower_pred / lower_tgt).where(lower_tgt > 1e-6).weighted(w).mean(["lat", "lon"])),
+        "upper_gap_ratio": float((upper_pred / upper_tgt).where(upper_tgt > 1e-6).weighted(w).mean(["lat", "lon"])),
+    }
+
+
+def conditional_rank_histogram(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray,
+                               threshold: xr.DataArray) -> np.ndarray:
+    """Tail CALIBRATION: the rank of the observation among {obs, members},
+    restricted to cases where the observation exceeds tau. M+1 bins. Reading:
+    flat = extreme observations are plausible extreme members (calibrated);
+    rising toward high ranks = observations more extreme than members (tails too
+    thin); falling toward low ranks = members too extreme (tails too thick). This
+    is the diagnostic that discharges the Brehmer-Strokorb obligation — no proper
+    score can assess tail calibration. Coarse at M=8; pool over cells for counts."""
+    if "ensemble" not in pred_tmax.dims:
+        raise ValueError("Conditional rank histogram requires ensemble predictions.")
+    num_members = pred_tmax.sizes["ensemble"]
+    below = (pred_tmax < tgt_tmax).sum("ensemble")
+    tied = (pred_tmax == tgt_tmax).sum("ensemble")
+    exceeds = tgt_tmax > threshold
+    below, tied, exceeds = xr.broadcast(below, tied, exceeds)
+    rng = np.random.default_rng(42)
+    ranks = below.values + rng.integers(0, tied.values + 1)
+    tail_ranks = ranks[np.asarray(exceeds.values) & np.isfinite(ranks)]
+    if tail_ranks.size == 0:
+        return np.zeros(num_members + 1)
+    histogram = np.bincount(tail_ranks.astype(int).ravel(), minlength=num_members + 1)
+    return histogram / histogram.sum()
+
+
+def probabilistic_detection(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray, threshold: xr.DataArray,
+                            climatology_probability: xr.DataArray = None) -> dict:
+    """Probabilistic heatwave detection. p_hat = fraction of members with Tmax > tau
+    per cell-day; o = 1 if observed Tmax > tau. Brier score (p_hat - o)^2, Brier
+    skill score vs climatology (BSS = 1 - BS_model / BS_climatology; climatology's
+    p_hat is ~0.1 by construction of the p90 threshold, or the observed base rate
+    if none is given). Reliability: with M members p_hat takes M+1 discrete values,
+    used directly as the bins (no binning choice). AUC via the rank-sum identity,
+    invariant to monotone recalibration so reported alongside reliability, not
+    instead of it."""
+    if "ensemble" not in pred_tmax.dims:
+        raise ValueError("Probabilistic detection requires ensemble predictions.")
+    num_members = pred_tmax.sizes["ensemble"]
+    forecast_probability = (pred_tmax > threshold).mean("ensemble")
+    observation = (tgt_tmax > threshold).astype(float)
+    forecast_probability, observation = xr.broadcast(forecast_probability, observation)
+    w = cos_weights(tgt_tmax)
+    brier_map = ((forecast_probability - observation) ** 2).mean([d for d in ("forecast", "day_idx")
+                                                                  if d in forecast_probability.dims])
+    brier = float(((forecast_probability - observation) ** 2).weighted(w).mean(list(forecast_probability.dims)))
+    base_rate = float(observation.weighted(w).mean(list(observation.dims)))
+    reference = climatology_probability if climatology_probability is not None else base_rate
+    brier_reference = float(((reference - observation) ** 2).weighted(w).mean(list(observation.dims)))
+    brier_skill_score = 1.0 - brier / brier_reference if brier_reference > 0 else 0.0
+
+    probability_values = forecast_probability.values.ravel()
+    observation_values = observation.values.ravel()
+    finite = np.isfinite(probability_values) & np.isfinite(observation_values)
+    probability_values, observation_values = probability_values[finite], observation_values[finite]
+    bin_index = np.rint(probability_values * num_members).astype(int)
+    reliability_forecast = np.arange(num_members + 1) / num_members
+    reliability_observed = np.full(num_members + 1, np.nan)
+    reliability_count = np.zeros(num_members + 1)
+    for bin_value in range(num_members + 1):
+        in_bin = bin_index == bin_value
+        reliability_count[bin_value] = in_bin.sum()
+        if in_bin.any():
+            reliability_observed[bin_value] = observation_values[in_bin].mean()
+
+    # AUC via the rank-sum identity is exactly sklearn's roc_auc_score; needs both classes present.
+    has_both_classes = 0 < observation_values.sum() < observation_values.size
+    auc = float(roc_auc_score(observation_values, probability_values)) if has_both_classes else float("nan")
+    return {
+        "brier_map": brier_map, "brier": brier, "brier_skill_score": brier_skill_score,
+        "base_rate": base_rate, "auc": float(auc),
+        "reliability_forecast": reliability_forecast, "reliability_observed": reliability_observed,
+        "reliability_count": reliability_count,
+    }
+
+
+def over_smoothing_diagnostic(pred: xr.DataArray, target: xr.DataArray) -> dict:
+    """Curvature check: mean |X_{h+1} - 2 X_h + X_{h-1}| (the discrete second
+    difference along hour) for model vs ERA5, by lead hour. The model curve below
+    ERA5's = the diurnal curve is too smooth — the power-variation signature of an
+    over-regularised reconstruction. Read as two raw curves, not a single score."""
+    pred = drop_batch(pred)
+    target = drop_batch(target)
+    pred_mean = pred.mean("ensemble") if "ensemble" in pred.dims else pred
+    second_pred = np.abs(pred_mean.diff("hour", n=2))
+    second_tgt = np.abs(target.diff("hour", n=2))
+    w = cos_weights(target)
+    return {
+        "pred_curve": second_pred.weighted(w).mean(["lat", "lon"]).mean("forecast"),
+        "tgt_curve": second_tgt.weighted(w).mean(["lat", "lon"]).mean("forecast"),
+    }
 
 

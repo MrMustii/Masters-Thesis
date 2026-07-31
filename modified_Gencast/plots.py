@@ -34,17 +34,16 @@ def _robust_limits(values, symmetric=False):
 
 
 def _ar_gridlines(ax, lead_hours, ar_window_hours):
-    """Dotted line at every forecast step, solid at day boundaries and AR windows."""
+    """Day boundaries (grey dotted), AR-window seams (bold dashed navy), x-ticks every 12h."""
     h0, h1 = float(lead_hours[0]), float(lead_hours[-1])
-    for x in lead_hours:
-        ax.axvline(float(x), color="grey", linewidth=0.4, linestyle=":", alpha=0.5, zorder=0)
+    ax.set_xticks(np.arange(np.ceil(h0 / 12) * 12, h1 + 1e-6, 12))
     day_marks = np.arange(np.ceil(h0 / 24) * 24, h1 + 1e-6, 24)
     for x in day_marks:
-        ax.axvline(x, color="grey", linewidth=0.9, linestyle="-", alpha=0.6, zorder=0)
+        ax.axvline(x, color="grey", linewidth=0.7, linestyle=":", alpha=0.35, zorder=0)
     if ar_window_hours and ar_window_hours < (h1 - h0 + 1):
         bnds = np.arange(np.ceil(h0 / ar_window_hours) * ar_window_hours, h1 + 1e-6, ar_window_hours)
         for x in bnds:
-            ax.axvline(x, color="dimgrey", linewidth=1.2, linestyle="-", alpha=0.7, zorder=0)
+            ax.axvline(x, color="navy", linewidth=1.4, linestyle="--", alpha=0.8, zorder=1)
 
 
 def _map_extent(region):
@@ -92,47 +91,57 @@ def _spatial_panel(fig, ax, data, lat, lon, title, cmap, vmin, vmax, cbar_label,
 # ── Lead-time curves ──────────────────────────────────────────────────────────
 
 def plot_temp_lead_curve(pred_da, tgt_da, out_path, ar_window_hours=None):
-    """Domain-mean temperature vs lead, one ERA5/model line pair per init hour.
-    Averaging across init hours would cancel the diurnal cycle into a flat line."""
+    """Domain-mean temperature vs lead: one top subplot per init hour (ERA5 vs model), one shared bias panel below."""
     weights = np.cos(np.deg2rad(tgt_da.lat))
     w = xr.DataArray(weights, coords={"lat": tgt_da.lat})
     tgt_spatial = tgt_da.weighted(w).mean(["lat", "lon"])
-    pred_spatial = pred_da.weighted(w).mean(["lat", "lon"])
-    if "ensemble" in pred_spatial.dims:
-        pred_spatial = pred_spatial.mean("ensemble")
+    pred_spatial = pred_da.weighted(w).mean(["lat", "lon"])  # keeps ensemble for the ±1σ band
+    has_ensemble = "ensemble" in pred_spatial.dims
     lead_hours = tgt_da.hour.values
     init_hours = pd.DatetimeIndex(tgt_da.forecast.values).hour
     unique_init_hours = np.unique(init_hours)
+    num_groups = len(unique_init_hours)
 
-    fig, (ax_abs, ax_bias) = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+    fig = plt.figure(figsize=(6 * num_groups, 6))
+    grid = fig.add_gridspec(2, num_groups)
+    bias_ax = fig.add_subplot(grid[1, :])
+    first_abs_ax = None
     for group_index, init_hour in enumerate(unique_init_hours):
+        abs_ax = fig.add_subplot(grid[0, group_index], sharey=first_abs_ax)
+        first_abs_ax = first_abs_ax or abs_ax
         group = init_hours == init_hour
         tgt_curve = tgt_spatial.isel(forecast=group).mean("forecast")
-        pred_curve = pred_spatial.isel(forecast=group).mean("forecast")
-        color = plt.get_cmap("tab10")(group_index)
-        suffix = f" (init {init_hour:02d} UTC)" if len(unique_init_hours) > 1 else ""
-        ax_abs.plot(lead_hours, tgt_curve.values, color=color, linewidth=1.8, label=f"ERA5{suffix}", zorder=3)
-        ax_abs.plot(lead_hours, pred_curve.values, color=color, linewidth=1.8, linestyle="--",
-                    label=f"{MODEL_LABEL}{suffix}", zorder=4)
-        ax_bias.plot(lead_hours, (pred_curve - tgt_curve).values, color=color, linewidth=1.8,
-                     label=f"init {init_hour:02d} UTC" if len(unique_init_hours) > 1 else None)
+        pred_group = pred_spatial.isel(forecast=group)
+        pred_curve = pred_group.mean(["ensemble", "forecast"]) if has_ensemble else pred_group.mean("forecast")
+        suffix = f" (init {init_hour:02d} UTC)" if num_groups > 1 else ""
+        abs_ax.plot(lead_hours, tgt_curve.values, color=C_ERA5, linewidth=1.8, label="ERA5", zorder=3)
+        if has_ensemble:
+            spread = pred_group.std("ensemble").mean("forecast")
+            abs_ax.fill_between(lead_hours, (pred_curve - spread).values, (pred_curve + spread).values,
+                                color=C_MODEL, alpha=0.18, zorder=2)
+        abs_ax.plot(lead_hours, pred_curve.values, color=C_MODEL, linewidth=1.8, linestyle="--",
+                    label=MODEL_LABEL + (" ±1σ" if has_ensemble else ""), zorder=4)
+        _ar_gridlines(abs_ax, lead_hours, ar_window_hours)
+        abs_ax.set_title(f"Domain-mean 2m temperature{suffix}", fontsize=11)
+        abs_ax.set_ylabel("T2m (K)")
+        abs_ax.legend(fontsize=9)
+        abs_ax.grid(True, alpha=0.3)
+        abs_ax.set_xlim(lead_hours[0], lead_hours[-1])
 
-    for ax in (ax_abs, ax_bias):
-        _ar_gridlines(ax, lead_hours, ar_window_hours)
-    ax_bias.axhline(0, color="black", linewidth=0.8, linestyle="--")
-    ax_abs.set_ylabel("Domain-mean T2m (K)")
-    ax_abs.set_title("Domain-mean 2m temperature vs ERA5", fontsize=12)
-    ax_abs.legend(fontsize=9)
-    ax_abs.grid(True, alpha=0.3)
-    ax_abs.set_xlim(lead_hours[0], lead_hours[-1])
-    ax_bias.set_xlabel("Lead time (hours)")
-    ax_bias.set_ylabel("Bias (K)")
-    ax_bias.set_title(f"{MODEL_LABEL} − ERA5 bias", fontsize=11)
-    if len(unique_init_hours) > 1:
-        ax_bias.legend(fontsize=9)
-    ax_bias.grid(True, alpha=0.3)
+        color = plt.get_cmap("tab10")(group_index)
+        bias_ax.plot(lead_hours, (pred_curve - tgt_curve).values, color=color, linewidth=1.8,
+                     label=f"init {init_hour:02d} UTC" if num_groups > 1 else None)
+
+    _ar_gridlines(bias_ax, lead_hours, ar_window_hours)
+    bias_ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+    bias_ax.set_xlabel("Lead time (hours)")
+    bias_ax.set_ylabel("Bias (K)")
+    bias_ax.set_title(f"{MODEL_LABEL} − ERA5 bias", fontsize=11)
+    if num_groups > 1:
+        bias_ax.legend(fontsize=9, loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
+    bias_ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved {out_path}")
 
@@ -140,12 +149,11 @@ def plot_temp_lead_curve(pred_da, tgt_da, out_path, ar_window_hours=None):
 def plot_temporal_errors(rmse, bias, out_path, ar_window_hours=None):
     lead_hours = rmse.hour.values
     fig, (ax_err, ax_bias) = plt.subplots(1, 2, figsize=(13, 4))
-    ax_err.plot(lead_hours, rmse.values, color=C_MODEL, linewidth=1.8, label="RMSE")
+    ax_err.plot(lead_hours, rmse.values, color=C_MODEL, linewidth=1.8)
     _ar_gridlines(ax_err, lead_hours, ar_window_hours)
     ax_err.set_xlabel("Lead time (hours)")
     ax_err.set_ylabel("Error (K)")
     ax_err.set_title("RMSE (ensemble mean)", fontsize=11)
-    ax_err.legend(fontsize=9)
     ax_err.grid(True, alpha=0.3)
     ax_err.set_xlim(lead_hours[0], lead_hours[-1])
     ax_bias.plot(lead_hours, bias.values, color=C_ERA5, linewidth=1.8)
@@ -163,14 +171,16 @@ def plot_temporal_errors(rmse, bias, out_path, ar_window_hours=None):
     print(f"  saved {out_path}")
 
 
-def plot_crps_growth(crps_growth, out_path, ar_window_hours=None):
+def plot_crps_growth(crps_growth, out_path, ar_window_hours=None, ylabel="CRPS (K)",
+                     title="Continuous Ranked Probability Score"):
+    """Shared by field CRPS and twCRPS growth curves; ylabel/title let the caller relabel."""
     lead_hours = crps_growth.hour.values
     fig, ax = plt.subplots(figsize=(9, 4))
     ax.plot(lead_hours, crps_growth.values, color=C_MODEL, linewidth=1.8)
     _ar_gridlines(ax, lead_hours, ar_window_hours)
     ax.set_xlabel("Lead time (hours)")
-    ax.set_ylabel("CRPS (K)")
-    ax.set_title("Continuous Ranked Probability Score", fontsize=11)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, fontsize=11)
     ax.set_xlim(lead_hours[0], lead_hours[-1])
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -311,28 +321,9 @@ def plot_metric_map(data_map, lat, lon, title, cbar_label, out_path, region=None
     print(f"  saved {out_path}")
 
 
-def plot_seasonal_bias_maps(bias_maps, lat, lon, out_dir, tag, region=None):
-    """All seasons' signed 2m-temperature bias maps in one figure, shared scale."""
-    all_values = np.concatenate([bias_map.values.ravel() for bias_map in bias_maps.values()])
-    vmin, vmax = _robust_limits(all_values, symmetric=True)
-    extent = _map_extent(region)
-    num_seasons = len(bias_maps)
-    fig, axes = plt.subplots(1, num_seasons, figsize=(6 * num_seasons, 6.5),
-                             subplot_kw={"projection": _proj(region)})
-    for ax, (season, bias_map) in zip(np.atleast_1d(axes), bias_maps.items()):
-        _spatial_panel(fig, ax, bias_map.values, lat, lon, season,
-                       "RdBu_r", vmin, vmax, "Bias (K)", extent=extent)
-    fig.suptitle("Seasonal 2m temperature bias", fontsize=13)
-    out_path = os.path.join(out_dir, f"seasonal_bias_{tag}.png")
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  saved {out_path}")
-
-
 # ── Heatwave ──────────────────────────────────────────────────────────────────
 
-def plot_heatwave_metrics(precision, recall, f1, precision_map, recall_map, f1_map,
-                          lat, lon, out_dir, tag, region=None):
+def plot_heatwave_metrics(precision, recall, f1, f1_map, lat, lon, out_dir, tag, region=None):
     lead_days = precision.day_idx.values
     day_labels = (lead_days + 1).astype(int)
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -352,18 +343,13 @@ def plot_heatwave_metrics(precision, recall, f1, precision_map, recall_map, f1_m
     plt.close(fig)
     print(f"  saved {out_curves}")
 
-    subplot_kw = {"projection": _proj(region)}
-    extent = _map_extent(region)
-    for data, slug, title in [(precision_map, "precision", "Heatwave precision"),
-                              (recall_map, "recall", "Heatwave recall"),
-                              (f1_map, "f1", "Heatwave F1")]:
-        fig_s, ax_s = plt.subplots(1, 1, figsize=(9, 7), subplot_kw=subplot_kw)
-        _spatial_panel(fig_s, ax_s, data.values, lat, lon, title, "RdYlGn",
-                       vmin=0, vmax=1, cbar_label=slug.capitalize(), extent=extent, cbar_extend="neither")
-        out_map = os.path.join(out_dir, f"heatwave_{slug}_map_{tag}.png")
-        fig_s.savefig(out_map, dpi=150, bbox_inches="tight")
-        plt.close(fig_s)
-        print(f"  saved {out_map}")
+    fig_s, ax_s = plt.subplots(1, 1, figsize=(9, 7), subplot_kw={"projection": _proj(region)})
+    _spatial_panel(fig_s, ax_s, f1_map.values, lat, lon, "Heatwave F1", "RdYlGn",
+                   vmin=0, vmax=1, cbar_label="F1", extent=_map_extent(region), cbar_extend="neither")
+    out_map = os.path.join(out_dir, f"heatwave_f1_map_{tag}.png")
+    fig_s.savefig(out_map, dpi=150, bbox_inches="tight")
+    plt.close(fig_s)
+    print(f"  saved {out_map}")
 
 
 def plot_spell_length_histogram(pred_lengths, tgt_lengths, out_path):
@@ -408,7 +394,7 @@ def plot_rev(rev_curve, out_path):
 
 # ── Ensemble diagnostics ──────────────────────────────────────────────────────
 
-def plot_rank_histogram(hist, out_path):
+def plot_rank_histogram(hist, out_path, title="Rank histogram (Talagrand)"):
     ranks = np.arange(len(hist))
     flat_ref = 1.0 / len(hist)
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -416,9 +402,42 @@ def plot_rank_histogram(hist, out_path):
     ax.axhline(flat_ref, color="black", linewidth=1.0, linestyle="--", label="Flat (ideal)")
     ax.set_xlabel("Rank")
     ax.set_ylabel("Relative frequency")
-    ax.set_title("Rank histogram (Talagrand)", fontsize=11)
+    ax.set_title(title, fontsize=11)
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"  saved {out_path}")
+
+
+def plot_reliability_diagram(reliability_forecast, reliability_observed, reliability_count, out_path):
+    """Reliability curve for probabilistic heatwave detection: observed exceedance
+    frequency vs forecast probability, one point per discrete ensemble probability
+    bin (M+1 of them). On the diagonal = calibrated; below = over-forecasting,
+    above = under-forecasting. The lower panel shows how many cell-days populate
+    each bin (a point on a near-empty bin is noise)."""
+    forecast_probability = np.asarray(reliability_forecast, dtype=float)
+    observed_frequency = np.asarray(reliability_observed, dtype=float)
+    bin_count = np.asarray(reliability_count, dtype=float)
+    populated = np.isfinite(observed_frequency)
+    fig, (ax_reliability, ax_count) = plt.subplots(
+        2, 1, figsize=(6, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+    ax_reliability.plot([0, 1], [0, 1], color="black", linewidth=0.8, linestyle="--", label="Perfect")
+    ax_reliability.plot(forecast_probability[populated], observed_frequency[populated], color=C_MODEL,
+                        linewidth=1.6, marker="o", markersize=5, label=MODEL_LABEL)
+    ax_reliability.set_ylabel("Observed exceedance frequency")
+    ax_reliability.set_title("Reliability — probabilistic heatwave detection", fontsize=11)
+    ax_reliability.set_xlim(0, 1)
+    ax_reliability.set_ylim(0, 1)
+    ax_reliability.legend(fontsize=9)
+    ax_reliability.grid(True, alpha=0.3)
+    bar_width = 0.8 / max(len(forecast_probability), 1)
+    ax_count.bar(forecast_probability, np.maximum(bin_count, 0), width=bar_width, color=C_ERA5, alpha=0.7)
+    ax_count.set_yscale("log")
+    ax_count.set_xlabel("Forecast probability (member fraction > τ)")
+    ax_count.set_ylabel("Count")
+    ax_count.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -520,52 +539,29 @@ def plot_diurnal_asymmetry(curve, out_path):
     print(f"  saved {out_path}")
 
 
-def plot_peak_hour_heatmap(heatmap, out_path):
-    """24x24 joint histogram of daily-peak hour, normalized per observed hour.
-    Mass on the diagonal is success; a horizontal stripe means a learned
-    constant-afternoon prior."""
-    counts = heatmap.values.astype(float)
-    observed_totals = counts.sum(axis=1, keepdims=True)
-    normalized = counts / np.where(observed_totals == 0, 1, observed_totals)
-    fig, ax = plt.subplots(figsize=(7, 6))
-    image = ax.pcolormesh(np.arange(25), np.arange(25), normalized.T, cmap="viridis")
-    ax.plot([0, 24], [0, 24], color="white", linewidth=1.0, linestyle="--")
-    ax.set_xlabel("Observed peak hour (UTC)")
-    ax.set_ylabel("Predicted peak hour (UTC)")
-    ax.set_xticks(range(0, 25, 3))
-    ax.set_yticks(range(0, 25, 3))
-    ax.set_title("Daily peak hour: predicted vs observed", fontsize=11)
-    fig.colorbar(image, ax=ax, label="P(predicted | observed)")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"  saved {out_path}")
-
-
-def plot_dtr_scatter(pred_dtr, tgt_dtr, out_path):
-    """Per-day DTR density scatter with the 1:1 line; flattening below the
-    line is regression to the mean. Pools members (ERA5 broadcast across
-    members)."""
-    pred_broadcast, tgt_broadcast = xr.broadcast(pred_dtr, tgt_dtr)
-    pred_flat = pred_broadcast.values.ravel()
-    tgt_flat = tgt_broadcast.values.ravel()
-    finite = np.isfinite(pred_flat) & np.isfinite(tgt_flat)
-    pred_flat, tgt_flat = pred_flat[finite], tgt_flat[finite]
-    fig, ax = plt.subplots(figsize=(6.5, 6))
-    density = ax.hexbin(tgt_flat, pred_flat, gridsize=60, mincnt=1, cmap="viridis", bins="log")
-    limit = float(np.concatenate([tgt_flat, pred_flat]).max())
-    ax.plot([0, limit], [0, limit], color=C_MODEL, linewidth=1.2, linestyle="--", label="1:1")
-    ax.set_xlim(0, limit)
-    ax.set_ylim(0, limit)
-    ax.set_xlabel("ERA5 DTR (K)")
-    ax.set_ylabel(f"{MODEL_LABEL} DTR (K)")
-    ax.set_title("Diurnal temperature range: model vs ERA5", fontsize=11)
+def plot_over_smoothing(pred_curve, tgt_curve, out_path, xlabel="Lead time (hours)", ar_window_hours=None):
+    """Curvature curves — mean |X_{h+1} − 2·X_h + X_{h-1}| by hour, model vs ERA5. The
+    model curve sitting below ERA5's = the diurnal cycle is too smooth (the
+    over-regularised reconstruction signature). `xlabel` switches lead-hour (exp3)
+    vs hour-of-day (exp4); pass ar_window_hours for the lead-hour case so day
+    boundaries are marked, like every other lead-hour plot."""
+    hours = tgt_curve.hour.values
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.plot(hours, tgt_curve.values, color=C_ERA5, linewidth=1.8, marker="o", markersize=3, label="ERA5")
+    ax.plot(hours, pred_curve.values, color=C_MODEL, linewidth=1.8, marker="o", markersize=3, label=MODEL_LABEL)
+    if ar_window_hours is not None:
+        _ar_gridlines(ax, hours, ar_window_hours)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Mean |2nd difference| (K)")
+    ax.set_title("Diurnal-cycle curvature (over-smoothing check)", fontsize=11)
     ax.legend(fontsize=9)
-    fig.colorbar(density, ax=ax, label="Count")
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"  saved {out_path}")
+
+
 
 
 def plot_hour_of_day_curves(curves, ylabel, title, out_path):
@@ -654,9 +650,10 @@ def plot_rmse_by_window_position(rmse_curve, out_path):
 
 # ── Single-day and weekly ─────────────────────────────────────────────────────
 
-def plot_single_day_profile(pred, target, date_str, out_path):
+def plot_single_day_profile(pred, target, date_str, out_path, ar_window_hours=None):
     """Diurnal profile for one calendar day using ONLY the day-1 forecast
-    (the forecast initialised the day before), so each hour has a single model point."""
+    (the forecast initialised the day before), so each hour has a single model point.
+    Skips a candidate whose masked hours straddle an AR-window reseed (would fake a jump)."""
     date_pd = pd.Timestamp(date_str).date()
     weights = np.cos(np.deg2rad(pred[_TEMP_VAR].lat))
     w = xr.DataArray(weights, coords={"lat": pred[_TEMP_VAR].lat})
@@ -675,13 +672,16 @@ def plot_single_day_profile(pred, target, date_str, out_path):
         candidate_init = forecast_times[int(candidate)]
         candidate_abs_times = np.array([candidate_init + pd.Timedelta(hours=int(h)) for h in lead_hours_arr])
         candidate_mask = np.array([t.date() == date_pd for t in candidate_abs_times])
-        if candidate_mask.any():
-            fc = int(candidate)
-            abs_times = candidate_abs_times
-            mask = candidate_mask
-            break
+        if not candidate_mask.any():
+            continue
+        if ar_window_hours and len(set(lead_hours_arr[candidate_mask] // ar_window_hours)) > 1:
+            continue  # straddles an AR-window reseed, would fake a jump
+        fc = int(candidate)
+        abs_times = candidate_abs_times
+        mask = candidate_mask
+        break
     if fc is None:
-        print(f"  WARNING: no forecast covers {date_str}, skipping day profile")
+        print(f"  WARNING: no forecast covers {date_str} within one AR window, skipping day profile")
         return
 
     tgt_line = tgt_da.isel(forecast=fc).weighted(w).mean(["lat", "lon"])
@@ -692,17 +692,17 @@ def plot_single_day_profile(pred, target, date_str, out_path):
     tgt_vals = tgt_line.values[mask][order]
 
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.scatter(hours_of_day, tgt_vals, color=C_ERA5, s=30, label="ERA5", zorder=3)
+    ax.plot(hours_of_day, tgt_vals, color=C_ERA5, marker="o", markersize=5, linewidth=1.5, label="ERA5", zorder=3)
     if "ensemble" in pred_da.dims and pred_da.sizes["ensemble"] > 1:
         model_values = pred_line.mean("ensemble").values[mask][order]
         pstd = pred_line.std("ensemble").values[mask][order]
-        ax.errorbar(hours_of_day, model_values, yerr=pstd, fmt="o", color=C_MODEL, markersize=5,
-                    linewidth=1.2, capsize=3, label=f"{MODEL_LABEL} (mean ± 1σ)", zorder=4)
+        ax.errorbar(hours_of_day, model_values, yerr=pstd, fmt="o-", color=C_MODEL, markersize=5,
+                    linewidth=1.5, capsize=3, label=f"{MODEL_LABEL} (mean ± 1σ)", zorder=4)
     else:
         pscalar = pred_line.mean("ensemble") if "ensemble" in pred_da.dims else pred_line
         model_values = pscalar.values[mask][order]
-        ax.scatter(hours_of_day, model_values, color=C_MODEL, s=30, marker="o",
-                   label=MODEL_LABEL, zorder=4)
+        ax.plot(hours_of_day, model_values, color=C_MODEL, marker="o", markersize=5, linewidth=1.5,
+               label=MODEL_LABEL, zorder=4)
     # Each hour comes from a different lead of the same init; make that visible.
     lead_values = lead_hours_arr[mask][order]
     for hour_value, lead_value, model_value in zip(hours_of_day, lead_values, model_values):
