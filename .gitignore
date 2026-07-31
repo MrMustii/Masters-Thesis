@@ -10,3 +10,5 @@ figs/*/*
 
 # one-off data-layer build scripts (kept local, not versioned)
 modified_Gencast/build_*.py
+__pycache__/*
+.ipynb_checkpoints/*
