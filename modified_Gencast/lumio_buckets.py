@@ -156,7 +156,7 @@ def checkAndDownload(time_start, time_end, variables=None, levels=None, region=N
                     chunk = chunk.sel(time=~pd.DatetimeIndex(chunk.time.values).isin(existing_times))
                     if chunk.time.size == 0:
                         continue
-                chunk.to_zarr(store, mode='a', append_dim='time', consolidated=True)
+                chunk.to_zarr(store, mode='a', append_dim='time', consolidated=True, align_chunks=True)
             average_seconds = (time.time() - started_at) / (segment_index + 1)
             remaining_minutes = average_seconds * (len(segments) - segment_index - 1) / 60
             print(

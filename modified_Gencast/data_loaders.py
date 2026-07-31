@@ -12,12 +12,7 @@ import xarray as xr
 from dask.distributed import LocalCluster, Client
 
 
-from modified_Gencast.lumio_buckets import (
-    lumio, bucket_name, missing_data, download, checkAndDownload, load,
-    format_and_slice, get_loading_region, GENERATED_VARS, GENCAST_SOURCE,
-    WB2_SOURCE, GENCAST_LEVELS, DOWNLOAD_TIME_CHUNK, DOWNLOAD_READ_CHUNK, APPEND_SEGMENT_STEPS,
-)  
-from modified_Gencast.stat_loader import load_stats  
+from modified_Gencast.lumio_buckets import ( load, format_and_slice, get_loading_region, GENERATED_VARS)  
 
 
 
@@ -195,6 +190,13 @@ class DailyStatsSampler(WindowSampler):
     def window_span(self) -> int:
         return (self.day_offsets[-1] - self.day_offsets[0] + 1) * self.steps_per_day - 1
 
+    def start_is_available(self, dataset: xr.Dataset, start_idx: int) -> bool:
+        """True only when the daily bucket holds every offset day this window needs."""
+        day_zero_start = start_idx + (0 - self.day_offsets[0]) * self.steps_per_day
+        day_zero_date = dataset.time.values[day_zero_start]
+        offset_dates = np.array([day_zero_date + np.timedelta64(offset * 24, "h") for offset in self.day_offsets])
+        return bool(np.isin(offset_dates, self.daily_dataset.time.values).all())
+
     def begin_batch(self) -> None:
         self.batch_target_hour = int(self.rng.choice(self.target_hours))
 
@@ -298,6 +300,22 @@ class Era5DataLoaderV2:
         N = self.dataset.sizes["time"]
         span = sampler.window_span
         self.window_starts = np.arange(0, N - span, stride, dtype=np.int64)
+        if hasattr(sampler, "start_is_available"):
+            available = np.array([sampler.start_is_available(self.dataset, int(start))
+                                  for start in self.window_starts])
+            if not available.all():
+                margin = max(abs(min(sampler.day_offsets)), abs(max(sampler.day_offsets)))
+                daily_min = np.datetime_as_string(sampler.daily_dataset.time.values.min(), unit="D")
+                daily_max = np.datetime_as_string(sampler.daily_dataset.time.values.max(), unit="D")
+                need_min = np.datetime_as_string(self.dataset.time.values.min(), unit="D")
+                need_max = np.datetime_as_string(self.dataset.time.values.max(), unit="D")
+                raise ValueError(
+                    f"Daily bucket doesn't cover this loader's period: "
+                    f"{int((~available).sum())}/{len(available)} windows need daily days it lacks. "
+                    f"Daily bucket has {daily_min}..{daily_max}; this loader needs "
+                    f"{need_min}..{need_max} (±{margin}d offset margin). Build the daily bucket for "
+                    f"the gap:\n  START_DATE={need_min} END_DATE={need_max} "
+                    f"sbatch job_scripts/lumi_build_daily_bucket.sh")
         print(
             f"[DataLoaderV2] {N}h  {len(self.window_starts)} windows  "
             f"grid={self.dataset.sizes['lat']}x{self.dataset.sizes['lon']}  "
