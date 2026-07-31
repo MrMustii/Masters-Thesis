@@ -19,4 +19,4 @@ module load LUMI/25.03
 module load CrayEnv
 module load cotainr
 module load PRoot
-singularity build containers/my_new_container.sif containers/update.def
+singularity build containers/my_new_container2.sif containers/update.def

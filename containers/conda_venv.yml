@@ -40,4 +40,5 @@ dependencies:
 # Added cdsapi 
 # Added netcdf4 cfgrib
 # Added gcsfs
-# Added optax
+# Added s3fs 
+# Added boto3

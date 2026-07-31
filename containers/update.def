@@ -1,5 +1,5 @@
 Bootstrap: localimage
-From: containers/container.sif
+From: containers/my_new_container.sif
 
 %post
-pip install optax==0.2.4
+pip install scores scoringrules xskillscore scikit-learn

@@ -9,7 +9,7 @@ import sys
 import os
 import pandas as pd
 import argparse
-from config import GENCAST_LIB, DEFAULT_OUTPUT, SCRATCH_PATH
+from config import GENCAST_LIB, DEFAULT_OUTPUT, DATA_PATH
 from datatest import prepare_data, download_data
 import datetime
 
@@ -304,7 +304,7 @@ if __name__ == "__main__":
     ###########################################################################
     print("---------- Loading data ... ----------")
     t0 = time.time()
-    path = SCRATCH_PATH + f"wb2_{args.start_date}_{args.end_date}_6h_{float(degree)}deg.zarr"
+    path = DATA_PATH + f"wb2_{args.start_date}_{args.end_date}_6h_{float(degree)}deg.zarr"
     if os.path.exists(path):
         print(f"Found existing data file at {path}. Loading data from this file for inference.")
         wb2 = prepare_data(path, deg=degree, time_slice=slice(args.start_date, args.end_date))
