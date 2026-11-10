@@ -1,14 +1,30 @@
+# caches
 __pycache__/
-**/__pycache__/
 *.pyc
+.ipynb_checkpoints/
+
+# containers and data stores
 *.sif
 *.zarr
-wandb/*
-logs/*
-figs/*/*
+*.nc
+
+# run artefacts
+wandb/
+logs/
+figs/
+
+# generated results - reproducible by re-running the pipeline
+comparison_*/
+z500_margin_vs_global/
+*.tex
+*.gif
+*.png
+
+# scratch
+to_delete/
+modified_Gencast/test.ipynb
 .claude
 
-# one-off data-layer build scripts (kept local, not versioned)
-modified_Gencast/build_*.py
-__pycache__/*
-.ipynb_checkpoints/*
+# documentation - the README is the only versioned markdown
+*.md
+!/README.md
