@@ -280,6 +280,7 @@ class Era5DataLoaderV2:
             if v not in GENERATED_VARS and not v.endswith(("_daily_mean", "_daily_max", "_daily_min"))
         ))
         levels = list(task_config["pressure_levels"])
+        # Widened by boundary_margin_degrees, so the training loss covers the belt; reports crop it back off.
         region = get_loading_region(task_config)
         print(f"[DataLoaderV2] Loading {time_start} → {time_end} ...")
         raw = load(time_start, time_end, variables=fetch_vars, levels=levels, region=region, freq=data_step)

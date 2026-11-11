@@ -1,3 +1,23 @@
+"""Temporally correlated noise for the continuous hourly rollout (exp3, RQ2).
+
+GenCast draws independent noise at each autoregressive step, which yields an hourly
+trajectory that is implausible as a time series even when every single hour is
+individually well calibrated. The constructions here differ only in how the noise is
+correlated across lead times:
+
+    fixed   one spherical draw reused at every lead time, the reference design
+    ou      Ornstein-Uhlenbeck, z_i = alpha * z_{i-1} + beta * nu_i, with
+            correlation length 1 / ou_rho hours and ou_rho = 0 collapsing to fixed
+
+Marginal hourly scores cannot separate these - two designs with the same marginal
+variance give the same hourly CRPS and different trajectories - so comparison 4 reads
+the temporal variogram instead.
+
+``build_noise_stacked`` is the batched implementation the rollout calls;
+``fixed_noise_sequence`` and ``ou_noise_sequence`` are the readable per-step
+equivalents and are kept as the reference the batched version is checked against.
+"""
+
 import functools
 import jax
 import jax.numpy as jnp

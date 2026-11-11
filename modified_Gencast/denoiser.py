@@ -1,25 +1,54 @@
+# Copyright 2024 DeepMind Technologies Limited.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS-IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Derived from google-deepmind/graphcast at commit c037656, file graphcast/denoiser.py.
+# Modifications copyright 2026 Mustafa Jawad El-Madani.
+# Changed: the icosahedral mesh is cropped to the regional grid and rebuilt when that
+# grid changes, and the denoiser is conditioned on forecast lead time.
+# Code and docstrings outside the "MODIFIED FROM UPSTREAM" markers are DeepMind's.
+"""The denoiser: a graph neural network over an icosahedral mesh cropped to the region.
+
+Two changes to upstream's denoiser, both required for regional work:
+
+    lead-time conditioning  ``ModifiedDenoiser`` adds Fourier features of the forecast
+                            lead time beside the noise-level encoding, so one set of
+                            weights serves every lead time (exp3 and exp4)
+    regional mesh           ``ModifiedDenoiserArchitecture`` crops the global
+                            icosahedral mesh to the grid's own extent and rebuilds the
+                            graph whenever the grid changes, which is what lets an exp4
+                            checkpoint run over NW America or N Africa unchanged
+
+``ModifiedDenoiser`` and ``ModifiedDenoiserArchitecture`` subclass upstream's versions;
+the mesh cropping in ``_crop_mesh`` and ``_maybe_init`` is the substantive addition.
+"""
+
 import dataclasses
 import chex
-import sys
 import jax
 import haiku as hk
 import jax.numpy as jnp
 import numpy as np
-from scipy import sparse
 import xarray
 from google.cloud import storage
 from typing import Optional
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis')
+
 from graphcast import denoiser
 from graphcast import deep_typed_graph_net
-from graphcast import denoisers_base as base
-from graphcast import grid_mesh_connectivity
 from graphcast import icosahedral_mesh
 from graphcast import model_utils
 from graphcast import sparse_transformer
 from graphcast import transformer
-from graphcast import typed_graph
 from graphcast import xarray_jax
 from graphcast import gencast
 from graphcast import checkpoint
@@ -30,17 +59,25 @@ from graphcast import rollout
 from modified_Gencast import regional_utils
 jax.config.update("jax_default_matmul_precision", "highest")
 
+# Fallback mesh-crop bounds, replaced by _maybe_init on first call; NOT the thesis domain.
 MIN_LAT, MAX_LAT = 40., 70.
 MIN_LON, MAX_LON = -10., 30.
 
-##### CHANGES BELOW
-# Time conditioning
+##### MODIFIED FROM UPSTREAM: begin
 @chex.dataclass(frozen=True, eq=True)
 class LeadTimeEncoderConfig:
+  """Fourier encoding of forecast lead time; absent from the config means no conditioning.
+
+  Properties:
+    max_horizon_hours: Lead times are divided by this before encoding, so it sets the
+      horizon the encoding can represent - 168 h for the week-long rollouts.
+    num_frequencies: Number of integer multiples of the base frequency to use.
+    output_sizes: Layer sizes for the MLP applied to the Fourier features.
+  """
   max_horizon_hours: float = 240.0
   num_frequencies: int = 32
   output_sizes: tuple[int, int] = (128, 128)
-####### CHANGES ABOVE
+##### MODIFIED FROM UPSTREAM: end
 
 
 @chex.dataclass(frozen=True, eq=True)
@@ -146,13 +183,13 @@ class ModifiedDenoiser(denoiser.Denoiser):
       self,
       noise_encoder_config,
       denoiser_architecture_config,
-      ##### CHANGES BELOW
+      ##### MODIFIED FROM UPSTREAM: begin
       lead_time_encoder_config=None,
-      ####### CHANGES ABOVE
+      ##### MODIFIED FROM UPSTREAM: end
   ):
     self._predictor = ModifiedDenoiserArchitecture(denoiser_architecture_config=denoiser_architecture_config)
     self._noise_level_encoder = denoiser.FourierFeaturesMLP(**noise_encoder_config)
-    ##### CHANGES BELOW
+    ##### MODIFIED FROM UPSTREAM: begin
     self._lead_time_encoder_config = lead_time_encoder_config
     if lead_time_encoder_config is not None:
       self._lead_time_encoder = denoiser.FourierFeaturesMLP(
@@ -163,7 +200,7 @@ class ModifiedDenoiser(denoiser.Denoiser):
       )
     else:
       self._lead_time_encoder = None
-    ####### CHANGES ABOVE
+    ##### MODIFIED FROM UPSTREAM: end
 
   def __call__(
       self,
@@ -171,9 +208,9 @@ class ModifiedDenoiser(denoiser.Denoiser):
       noisy_targets,
       noise_levels,
       forcings=None,
-      ##### CHANGES BELOW
+      ##### MODIFIED FROM UPSTREAM: begin
       lead_time_hours=None,
-      ####### CHANGES ABOVE
+      ##### MODIFIED FROM UPSTREAM: end
       **kwargs,
   ):
     if forcings is None:
@@ -193,7 +230,7 @@ class ModifiedDenoiser(denoiser.Denoiser):
         )
     )
 
-    ##### CHANGES BELOW
+    ##### MODIFIED FROM UPSTREAM: begin
     # --- Lead time encoding  NEW ---
     if self._lead_time_encoder is not None:
       if lead_time_hours is not None:
@@ -215,7 +252,7 @@ class ModifiedDenoiser(denoiser.Denoiser):
               ("batch", "lead_time_encoding_channels"), lt_encodings
           )
       )
-    ####### CHANGES ABOVE
+    ##### MODIFIED FROM UPSTREAM: end
 
     return self._predictor(
         inputs=inputs,
@@ -226,10 +263,20 @@ class ModifiedDenoiser(denoiser.Denoiser):
 
 
 class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
+    """Upstream denoiser architecture with the mesh cropped to a regional grid.
+
+    Upstream builds one global icosahedral mesh at construction and keeps it. A regional
+    model needs the mesh restricted to its own extent, and a transferred model needs it
+    rebuilt when the extent changes, so the mesh and the Grid2Mesh query radius are
+    recomputed lazily in ``_maybe_init`` from whatever grid the first batch carries.
+    The ``lat_min``/``lat_max``/``lon_min``/``lon_max`` arguments only seed the mesh
+    built here; the first real batch replaces it.
+    """
+
     def __init__(self, denoiser_architecture_config,
-                 ##### CHANGES BELOW
+                 ##### MODIFIED FROM UPSTREAM: begin
                  lat_min=MIN_LAT, lat_max=MAX_LAT, lon_min=MIN_LON, lon_max=MAX_LON
-                 ####### CHANGES ABOVE
+                 ##### MODIFIED FROM UPSTREAM: end
                  ):
         self._spatial_features_kwargs = dict(
             add_node_positions=False,
@@ -240,18 +287,18 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
             relative_latitude_local_coordinates=True,
         )
 
-        ##### CHANGES BELOW
-        # Store config needed to rebuild the mesh when the region changes NEW Unused
+        ##### MODIFIED FROM UPSTREAM: begin
+        # Kept so _maybe_init can rebuild the mesh and query radius when the region changes.
         self._mesh_size = denoiser_architecture_config.mesh_size
         self._radius_query_fraction = denoiser_architecture_config.radius_query_fraction_edge_length
-        ####### CHANGES ABOVE
+        ##### MODIFIED FROM UPSTREAM: end
 
         mesh = icosahedral_mesh.get_last_triangular_mesh_for_sphere(
             splits=self._mesh_size
         )
-        ##### CHANGES BELOW
+        ##### MODIFIED FROM UPSTREAM: begin
         mesh = self._crop_mesh(mesh, lat_min, lat_max, lon_min, lon_max)
-        ####### CHANGES ABOVE
+        ##### MODIFIED FROM UPSTREAM: end
         self._mesh = denoiser._permute_mesh_to_banded(mesh=mesh)
 
         self._grid2mesh_gnn = deep_typed_graph_net.DeepTypedGraphNet(
@@ -320,11 +367,15 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
         self._mesh_graph_structure = None
         self._mesh2grid_graph_structure = None
 
-    ##### CHANGES BELOW
+    ##### MODIFIED FROM UPSTREAM: begin
     def _maybe_init(self, sample_inputs):
+        """Rebuild mesh and graphs if this batch's grid differs from the last one.
+
+        Replaces upstream's build-once behaviour. A no-op after the first batch for a
+        fixed region; the rebuild path is what region transfer relies on.
+        """
         new_lat = sample_inputs.lat.values
         new_lon = sample_inputs.lon.values
-        # NEW Incase region change
         region_changed = (
             self._grid_lat is None
             or not np.array_equal(new_lat, self._grid_lat)
@@ -352,12 +403,17 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
         self._mesh_graph_structure      = self._init_mesh_graph()
         self._mesh2grid_graph_structure = self._init_mesh2grid_graph()
         self._initialized = True
-    ####### CHANGES ABOVE
+    ##### MODIFIED FROM UPSTREAM: end
 
-    ##### CHANGES BELOW
+    ##### MODIFIED FROM UPSTREAM: begin
     @staticmethod
-    # NEW
     def _crop_mesh(mesh, lat_min, lat_max, lon_min, lon_max):
+        """Keep only the mesh vertices inside the bounds, and the faces they fully span.
+
+        Vertices are reindexed to stay contiguous, and a face survives only if all three
+        of its vertices do, so the result is a valid TriangularMesh covering the region.
+        Longitude is wrapped to [-180, 180] first to match the bound convention.
+        """
         phi, theta = model_utils.cartesian_to_spherical(
             mesh.vertices[:, 0], mesh.vertices[:, 1], mesh.vertices[:, 2])
         lat, lon = model_utils.spherical_to_lat_lon(phi, theta)
@@ -379,105 +435,105 @@ class ModifiedDenoiserArchitecture(denoiser._DenoiserArchitecture):
             vertices=mesh.vertices[keep_idx],
             faces=new_faces,
         )
-    ####### CHANGES ABOVE
+    ##### MODIFIED FROM UPSTREAM: end
 
 
-if __name__ == "__main__":
-    # Test
-    gcs_client = storage.Client.create_anonymous_client()
-    gcs_bucket = gcs_client.get_bucket("dm_graphcast")
-    dir_prefix = "gencast/"
-    dataset_file = "source-era5_date-2019-03-29_res-0.25_levels-13_steps-01.nc"
-    with gcs_bucket.blob(dir_prefix + f"dataset/{dataset_file}").open("rb") as f:
-        google = xarray.load_dataset(f)
-
-    with gcs_bucket.blob(dir_prefix + "params/GenCast 0p25deg <2019.npz").open("rb") as f:
-        ckpt = checkpoint.load(f, gencast.CheckPoint)
-
-    params = ckpt.params
-    task_config = ckpt.task_config
-    sampler_config = ckpt.sampler_config
-    noise_config = ckpt.noise_config
-    noise_encoder_config = ckpt.noise_encoder_config
-    denoiser_architecture_config = ckpt.denoiser_architecture_config
-    denoiser_architecture_config.sparse_transformer_config.attention_type = "triblockdiag_mha"
-    denoiser_architecture_config.sparse_transformer_config.mask_type = "full"
-
-    with gcs_bucket.blob(dir_prefix + "stats/diffs_stddev_by_level.nc").open("rb") as f:
-        diffs_stddev_by_level = xarray.load_dataset(f).compute()
-    with gcs_bucket.blob(dir_prefix + "stats/mean_by_level.nc").open("rb") as f:
-        mean_by_level = xarray.load_dataset(f).compute()
-    with gcs_bucket.blob(dir_prefix + "stats/stddev_by_level.nc").open("rb") as f:
-        stddev_by_level = xarray.load_dataset(f).compute()
-    with gcs_bucket.blob(dir_prefix + "stats/min_by_level.nc").open("rb") as f:
-        min_by_level = xarray.load_dataset(f).compute()
-
-    # Crop dataset to region
-    google_region = google.assign_coords(lon=(google.lon.values + 180) % 360 - 180)
-    google_region = google_region.sortby("lon")
-    google_region = google_region.sel(lat=slice(MIN_LAT, MAX_LAT), lon=slice(MIN_LON, MAX_LON))
-
-    eval_inputs, eval_targets, eval_forcings = data_utils.extract_inputs_targets_forcings(
-        google_region,
-        target_lead_times=slice("12h", f"{(google_region.sizes['time'] - 2) * 12}h"),
-        **dataclasses.asdict(task_config),
-    )
-    eval_inputs   = eval_inputs.compute()
-    eval_targets  = eval_targets.compute()
-    eval_forcings = eval_forcings.compute()
-
-    regional_utils.patch_samplers_utils()
-    denoiser._DenoiserArchitecture = ModifiedDenoiserArchitecture
-
-    def construct_predictor():
-        predictor = gencast.GenCast(
-            sampler_config=sampler_config,
-            task_config=task_config,
-            denoiser_architecture_config=denoiser_architecture_config,
-            noise_config=noise_config,
-            noise_encoder_config=noise_encoder_config,
-        )
-        predictor = normalization.InputsAndResiduals(
-            predictor,
-            diffs_stddev_by_level=diffs_stddev_by_level,
-            mean_by_level=mean_by_level,
-            stddev_by_level=stddev_by_level,
-        )
-        predictor = nan_cleaning.NaNCleaner(
-            predictor=predictor,
-            reintroduce_nans=True,
-            fill_value=min_by_level,
-            var_to_clean="sea_surface_temperature",
-        )
-        return predictor
-
-    @hk.transform_with_state
-    def run_forward(inputs, targets_template, forcings):
-        return construct_predictor()(inputs, targets_template=targets_template, forcings=forcings)
-
-    state = {}
-    run_forward_jitted = jax.jit(
-        lambda rng, i, t, f: run_forward.apply(params, state, rng, i, t, f)[0]
-    )
-    run_forward_pmap = xarray_jax.pmap(run_forward_jitted, dim="sample")
-
-    rng  = jax.random.PRNGKey(0)
-    rngs = np.stack([jax.random.fold_in(rng, i) for i in range(1)], axis=0)
-
-    chunks = []
-    for chunk in rollout.chunked_prediction_generator_multiple_runs(
-        predictor_fn=run_forward_pmap,
-        rngs=rngs,
-        inputs=eval_inputs,
-        targets_template=eval_targets * np.nan,
-        forcings=eval_forcings,
-        num_steps_per_chunk=1,
-        num_samples=1,
-        pmap_devices=jax.local_devices(),
-    ):
-        chunks.append(chunk)
-    predictions = xarray.combine_by_coords(chunks)
-
-    predictions.compute().to_zarr("regional_predictions.zarr", mode="w")
-    eval_targets.to_zarr("regional_ground_truth.zarr", mode="w")
-    print("Saved regional_predictions.zarr and regional_ground_truth.zarr")
+# if __name__ == "__main__":
+#     # Test
+#     gcs_client = storage.Client.create_anonymous_client()
+#     gcs_bucket = gcs_client.get_bucket("dm_graphcast")
+#     dir_prefix = "gencast/"
+#     dataset_file = "source-era5_date-2019-03-29_res-0.25_levels-13_steps-01.nc"
+#     with gcs_bucket.blob(dir_prefix + f"dataset/{dataset_file}").open("rb") as f:
+#         google = xarray.load_dataset(f)
+# 
+#     with gcs_bucket.blob(dir_prefix + "params/GenCast 0p25deg <2019.npz").open("rb") as f:
+#         ckpt = checkpoint.load(f, gencast.CheckPoint)
+# 
+#     params = ckpt.params
+#     task_config = ckpt.task_config
+#     sampler_config = ckpt.sampler_config
+#     noise_config = ckpt.noise_config
+#     noise_encoder_config = ckpt.noise_encoder_config
+#     denoiser_architecture_config = ckpt.denoiser_architecture_config
+#     denoiser_architecture_config.sparse_transformer_config.attention_type = "triblockdiag_mha"
+#     denoiser_architecture_config.sparse_transformer_config.mask_type = "full"
+# 
+#     with gcs_bucket.blob(dir_prefix + "stats/diffs_stddev_by_level.nc").open("rb") as f:
+#         diffs_stddev_by_level = xarray.load_dataset(f).compute()
+#     with gcs_bucket.blob(dir_prefix + "stats/mean_by_level.nc").open("rb") as f:
+#         mean_by_level = xarray.load_dataset(f).compute()
+#     with gcs_bucket.blob(dir_prefix + "stats/stddev_by_level.nc").open("rb") as f:
+#         stddev_by_level = xarray.load_dataset(f).compute()
+#     with gcs_bucket.blob(dir_prefix + "stats/min_by_level.nc").open("rb") as f:
+#         min_by_level = xarray.load_dataset(f).compute()
+# 
+#     # Crop dataset to region
+#     google_region = google.assign_coords(lon=(google.lon.values + 180) % 360 - 180)
+#     google_region = google_region.sortby("lon")
+#     google_region = google_region.sel(lat=slice(MIN_LAT, MAX_LAT), lon=slice(MIN_LON, MAX_LON))
+# 
+#     eval_inputs, eval_targets, eval_forcings = data_utils.extract_inputs_targets_forcings(
+#         google_region,
+#         target_lead_times=slice("12h", f"{(google_region.sizes['time'] - 2) * 12}h"),
+#         **dataclasses.asdict(task_config),
+#     )
+#     eval_inputs   = eval_inputs.compute()
+#     eval_targets  = eval_targets.compute()
+#     eval_forcings = eval_forcings.compute()
+# 
+#     regional_utils.patch_samplers_utils()
+#     denoiser._DenoiserArchitecture = ModifiedDenoiserArchitecture
+# 
+#     def construct_predictor():
+#         predictor = gencast.GenCast(
+#             sampler_config=sampler_config,
+#             task_config=task_config,
+#             denoiser_architecture_config=denoiser_architecture_config,
+#             noise_config=noise_config,
+#             noise_encoder_config=noise_encoder_config,
+#         )
+#         predictor = normalization.InputsAndResiduals(
+#             predictor,
+#             diffs_stddev_by_level=diffs_stddev_by_level,
+#             mean_by_level=mean_by_level,
+#             stddev_by_level=stddev_by_level,
+#         )
+#         predictor = nan_cleaning.NaNCleaner(
+#             predictor=predictor,
+#             reintroduce_nans=True,
+#             fill_value=min_by_level,
+#             var_to_clean="sea_surface_temperature",
+#         )
+#         return predictor
+# 
+#     @hk.transform_with_state
+#     def run_forward(inputs, targets_template, forcings):
+#         return construct_predictor()(inputs, targets_template=targets_template, forcings=forcings)
+# 
+#     state = {}
+#     run_forward_jitted = jax.jit(
+#         lambda rng, i, t, f: run_forward.apply(params, state, rng, i, t, f)[0]
+#     )
+#     run_forward_pmap = xarray_jax.pmap(run_forward_jitted, dim="sample")
+# 
+#     rng  = jax.random.PRNGKey(0)
+#     rngs = np.stack([jax.random.fold_in(rng, i) for i in range(1)], axis=0)
+# 
+#     chunks = []
+#     for chunk in rollout.chunked_prediction_generator_multiple_runs(
+#         predictor_fn=run_forward_pmap,
+#         rngs=rngs,
+#         inputs=eval_inputs,
+#         targets_template=eval_targets * np.nan,
+#         forcings=eval_forcings,
+#         num_steps_per_chunk=1,
+#         num_samples=1,
+#         pmap_devices=jax.local_devices(),
+#     ):
+#         chunks.append(chunk)
+#     predictions = xarray.combine_by_coords(chunks)
+# 
+#     predictions.compute().to_zarr("regional_predictions.zarr", mode="w")
+#     eval_targets.to_zarr("regional_ground_truth.zarr", mode="w")
+#     print("Saved regional_predictions.zarr and regional_ground_truth.zarr")

@@ -11,7 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Loss functions (and terms for use in loss functions) used for weather."""
+#
+# Derived from google-deepmind/graphcast at commit c037656, file graphcast/losses.py.
+# Modifications copyright 2026 Mustafa Jawad El-Madani.
+# Changed: added regional_latitude_weights and weighted_mse_per_level_regional.
+# Code and docstrings outside the "MODIFIED FROM UPSTREAM" markers are DeepMind's.
+"""Loss functions (and terms for use in loss functions) used for weather.
+
+Upstream graphcast losses, with two additions for the regional domain:
+``regional_latitude_weights``, cos-latitude area weights that do not require the grid
+to reach the poles, and ``weighted_mse_per_level_regional``, which every regional run
+trains against because ``GenCast.loss`` calls it directly.
+
+Every loss here reduces over the whole array it is handed and applies no spatial mask,
+so the domain is entirely the caller's choice. What the caller passes is decided in
+``data_loaders.py``.
+"""
 
 from typing import Mapping
 

@@ -1,3 +1,34 @@
+# Copyright 2024 DeepMind Technologies Limited.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS-IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Derived from google-deepmind/graphcast at commit c037656, file graphcast/samplers_utils.py.
+# Modifications copyright 2026 Mustafa Jawad El-Madani.
+# Changed: spherical_white_noise_like and apply_stochastic_churn are regional rewrites of
+# the upstream functions of the same name, sampling on the full sphere and then cropping.
+# build_global_template, boundary_margin_mask and patch_samplers_utils are mine.
+"""Regional replacements for GenCast's global sampling utilities.
+
+GenCast draws isotropic noise on the full 0.25 degree sphere, which a sub-global grid
+cannot do directly. Every sampler here draws globally and then crops, so the noise
+keeps its spherical covariance over a regional domain. ``patch_samplers_utils``
+installs these over ``graphcast.samplers_utils`` and must run before any predictor
+is built.
+
+Also owns ``boundary_margin_mask``, the lateral-boundary belt that
+``BoundaryForcedPredictor`` in gencast.py overwrites with ERA5 truth.
+"""
+
 import haiku as hk
 import jax.numpy as jnp
 import numpy as np

@@ -1,12 +1,51 @@
+# Copyright 2024 DeepMind Technologies Limited.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS-IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Derived from google-deepmind/graphcast at commit c037656, file graphcast/gencast.py.
+# Modifications copyright 2026 Mustafa Jawad El-Madani.
+# Changed: regional spherical noise, the regional loss, lead-time conditioning,
+# pre-generated initial noise, and the BoundaryForcedPredictor wrapper.
+# Code and docstrings outside the "MODIFIED FROM UPSTREAM" markers are DeepMind's.
+"""Model definition: run configs, the checkpoint container, and the three predictors.
+
+``load_config`` turns one JSON file from ``traninig configs/`` into a ``GenCastSetup``
+holding every instantiated config object a training or eval run needs. ``CheckPoint``
+is what each run serialises, so a checkpoint carries its own architecture and can be
+reloaded without its JSON.
+
+Three predictors, each wrapping the previous one at inference:
+
+    GenCast                  the diffusion predictor, adapted from upstream to draw
+                             regional spherical noise, score the regional loss, and
+                             condition the denoiser on lead time
+    ModifiedSampler          DPM-Solver++ 2S extended to accept pre-generated initial
+                             noise, which is how the exp3 noise designs steer a
+                             trajectory rather than redrawing at every step
+    BoundaryForcedPredictor  one-way nesting - overwrites the boundary belt with ERA5
+                             truth after every autoregressive step
+
+Of the three, only ``BoundaryForcedPredictor`` is wholly mine; the other two are
+upstream classes with the marked blocks changed.
+"""
+
 from typing import Any, Optional, Tuple
 import chex
 import dataclasses
-import sys
 import json
 import os
+
 from gencast_infernce.config import CONFIGS_DIR
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis')
 
 from graphcast import casting
 from graphcast import dpm_solver_plus_plus_2s
@@ -26,6 +65,7 @@ import xarray
 
 @chex.dataclass(frozen=True, eq=True)
 class SamplerConfig:
+    """Inference-time reverse diffusion: the noise-level ladder and the churn applied per step."""
     max_noise_level: float
     min_noise_level: float
     num_noise_levels: int
@@ -38,6 +78,7 @@ class SamplerConfig:
 
 @chex.dataclass(frozen=True, eq=True)
 class NoiseConfig:
+    """Training-time noise-level distribution, rho-spaced. Unrelated to the inference ladder."""
     training_noise_level_rho: float
     training_max_noise_level: float
     training_min_noise_level: float
@@ -45,6 +86,13 @@ class NoiseConfig:
 
 @dataclasses.dataclass
 class LossConfig:
+    """Loss settings read from the training config.
+
+    Only ``per_variable_weights`` has any effect. ``GenCast.loss`` always calls
+    ``weighted_mse_per_level_regional`` and always applies the Karras noise weighting,
+    so ``loss_function``, ``loss_area_weighting`` and ``loss_noise_level_weighting``
+    are recorded but never consulted.
+    """
     loss_function: str
     per_variable_weights: dict
     loss_area_weighting: bool
@@ -193,9 +241,10 @@ def load_config(config_name: str) -> GenCastSetup:
     )
 
 
-##### CHANGES BELOW
+##### MODIFIED FROM UPSTREAM: begin
 @chex.dataclass(frozen=True, eq=True)
 class CheckPoint:
+    """A trained run on disk: parameters plus every config needed to rebuild its architecture."""
     description: str
     license: str
     params: dict[str, Any]
@@ -205,7 +254,7 @@ class CheckPoint:
     noise_config: NoiseConfig
     noise_encoder_config: modified_denoiser.NoiseEncoderConfig
     lead_time_encoder_config: Optional[modified_denoiser.LeadTimeEncoderConfig] = None
-####### CHANGES ABOVE
+##### MODIFIED FROM UPSTREAM: end
 class ModifiedSampler(dpm_solver_plus_plus_2s.Sampler):
     """Extends the DPM-Solver++ 2S sampler with optional pre-generated initial noise.
 
@@ -285,10 +334,10 @@ class GenCast(predictor_base.Predictor):
         sampler_config: Optional[SamplerConfig] = None,
         noise_config: Optional[NoiseConfig] = None,
         noise_encoder_config: Optional[modified_denoiser.NoiseEncoderConfig] = None,
-        ##### CHANGES BELOW
+        ##### MODIFIED FROM UPSTREAM: begin
         lead_time_encoder_config: Optional[modified_denoiser.LeadTimeEncoderConfig] = None,
         loss_config: Optional[LossConfig] = None,
-        ####### CHANGES ABOVE
+        ##### MODIFIED FROM UPSTREAM: end
     ):
         """Constructs GenCast."""
         # Output size depends on number of variables being predicted.
@@ -306,18 +355,16 @@ class GenCast(predictor_base.Predictor):
         )
         denoiser_architecture_config.node_output_size = num_outputs
 
-        ##### CHANGES BELOW
+        ##### MODIFIED FROM UPSTREAM: begin
         self._denoiser = modified_denoiser.ModifiedDenoiser(
             noise_encoder_config,
             denoiser_architecture_config,
             lead_time_encoder_config,
         )
-        ####### CHANGES ABOVE
+        self._loss_config = loss_config
+        ##### MODIFIED FROM UPSTREAM: end
         self._sampler_config = sampler_config
         self._noise_config = noise_config
-        ##### CHANGES BELOW
-        self._loss_config = loss_config
-        ####### CHANGES ABOVE
 
     def _c_in(self, noise_scale: xarray.DataArray) -> xarray.DataArray:
         """Scaling applied to the noisy targets input to the underlying network."""
@@ -369,9 +416,9 @@ class GenCast(predictor_base.Predictor):
         inputs: xarray.Dataset,
         targets: xarray.Dataset,
         forcings: Optional[xarray.Dataset] = None,
-        ##### CHANGES BELOW
+        ##### MODIFIED FROM UPSTREAM: begin
         lead_time_hours=None,
-        ####### CHANGES ABOVE
+        ##### MODIFIED FROM UPSTREAM: end
     ) -> predictor_base.LossAndDiagnostics:
         if self._noise_config is None:
             raise ValueError("Noise config must be specified to train GenCast.")
@@ -390,7 +437,7 @@ class GenCast(predictor_base.Predictor):
             dims=("batch",),
         )
 
-        ##### CHANGES BELOW
+        ##### MODIFIED FROM UPSTREAM: begin
         # Sample noise and apply it to targets.
         noise = regional_utils.spherical_white_noise_like(targets) * noise_levels
         noisy_targets = targets + noise
@@ -405,7 +452,7 @@ class GenCast(predictor_base.Predictor):
             targets,
             per_variable_weights=per_variable_weights,
         )
-        ####### CHANGES ABOVE
+        ##### MODIFIED FROM UPSTREAM: end
         loss *= self._loss_weighting(noise_levels)
         return loss, diagnostics
 
