@@ -1,3 +1,21 @@
+"""The training loop. Launched by job_scripts/lumi_train.sh.
+
+Trains one regional checkpoint from one JSON config, in two stages that share parameters:
+
+    stage 1   1.0 degree data, coarser mesh                  cheap, gets the weights close
+    stage 2   0.25 degree data, finer mesh, grid2mesh
+              aggregate normalisation 16.0                   the checkpoint experiments use
+
+Stage 2 starts from stage 1's parameters, so ``--stage both`` runs them back to back.
+Everything that differs between experiments - variable set, region, sampler type, noise and
+lead-time conditioning - comes out of the config, so this one file trains exp2, exp3 and
+exp4 without branching.
+
+Writes ``<scratch>/checkpoints/<run_name>_stage<N>/``: the parameters pickled every
+``--save-every`` steps, plus the config they were trained with, so a checkpoint can be
+reloaded without the original JSON. Losses and per-lead-time validation go to wandb.
+"""
+
 import argparse
 import json
 import os
@@ -25,6 +43,11 @@ CKPT_DIR = os.path.normpath(os.path.join(SCRATCH_PATH, "checkpoints"))
 
 
 def make_optimizer(peak_lr, warmup_steps, total_steps, weight_decay, gradient_clip_norm, start_step=0):
+    """AdamW on a warmup-then-cosine-decay schedule, with global-norm gradient clipping.
+
+    optax's step counter restarts at zero on resume, so start_step shifts the schedule
+    forward to keep the learning rate continuous across a restart.
+    """
     schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=peak_lr,
@@ -43,6 +66,7 @@ def make_optimizer(peak_lr, warmup_steps, total_steps, weight_decay, gradient_cl
 
 
 def save_checkpoint(params, step, run_dir):
+    """Pickle the parameters as step_<step>.pkl and return the path."""
     path = os.path.join(run_dir, f"step_{step:08d}.pkl")
     with open(path, "wb") as f:
         pickle.dump(params, f)
@@ -51,11 +75,17 @@ def save_checkpoint(params, step, run_dir):
 
 
 def load_checkpoint(path):
+    """Unpickle parameters written by save_checkpoint."""
     with open(path, "rb") as f:
         return pickle.load(f)
 
 
 def init_wandb(config, stage_num):
+    """Start a wandb run, falling back to offline or disabled when no API key is set.
+
+    Queries the project first and suffixes the name if it is already taken, so a re-run
+    never overwrites an earlier run's history.
+    """
     api_key = os.environ.get("WANDB_API_KEY", "").strip()
     mode = os.environ.get("WANDB_MODE", "online").strip().lower()
     online = bool(api_key) and mode not in ("offline", "disabled")
@@ -76,6 +106,11 @@ def init_wandb(config, stage_num):
 
 
 def get_diffs_stddev(stats, lead_time_hours_arr):
+    """Pick this batch's residual normaliser out of whatever shape stat_loader returned.
+
+    Variable-lead and daily runs get a dict keyed by lead time or hour of day; fixed-lead
+    runs get a single Dataset that applies to every batch.
+    """
     diffs = stats["diffs_stddev_by_level"]
     if isinstance(diffs, dict):
         return diffs[int(np.asarray(lead_time_hours_arr).flat[0])]
@@ -83,6 +118,13 @@ def get_diffs_stddev(stats, lead_time_hours_arr):
 
 
 def build_loss_fn(setup, stats):
+    """Build the haiku-transformed loss: GenCast wrapped in normalisation, then NaN cleaning.
+
+    daily_stats runs swap in ``InputsAndResidualsDayZero`` instead of graphcast's
+    ``InputsAndResiduals``, because exp4's residual is measured against day zero's mean
+    rather than the last input frame. NaN cleaning is only added when sea surface
+    temperature is in the variable set, since that is the only field with missing cells.
+    """
     use_lead_time = setup.lead_time_encoder_config is not None
     sampler_type = setup.config["training_config"].get("sampler_type", "fixed")
     task_config = setup.config["task_config"]
@@ -130,6 +172,12 @@ def build_loss_fn(setup, stats):
 def run_stage(stage_num, setup, stats, train_loader, val_loader, params, state, rng,
               total_steps, peak_lr, warmup_steps, weight_decay, gradient_clip_norm,
               ckpt_dir, run, save_every, start_step=0):
+    """Run one stage to total_steps: validate every 100 steps, checkpoint every save_every.
+
+    Initialises parameters from the first batch only when none are passed in, which is what
+    lets stage 2 continue from stage 1 instead of starting over. Returns the parameters,
+    haiku state and rng so the next stage can pick them up.
+    """
     loss_fn, use_lead_time = build_loss_fn(setup, stats)
 
     if params is None:
@@ -237,6 +285,7 @@ def run_stage(stage_num, setup, stats, train_loader, val_loader, params, state, 
 
 
 def main():
+    """Load the config and stats once, then run the requested stage or stages in order."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="test_traning.json")
     parser.add_argument("--stage", default="1", choices=["1", "2", "both"])
