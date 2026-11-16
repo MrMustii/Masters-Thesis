@@ -1,7 +1,27 @@
+"""Daily-statistics reconstruction. Step 3 of the pipeline, for exp4. MODE=exp4 in lumi_eval.sh.
+
+Reconstructs the 24 hourly frames of a day from that day's daily mean, max and min - the RQ3
+question of whether coarse daily statistics can be deaggregated back to an hourly cycle. Which
+days are given as input is what exp4 varies, set by ``day_offsets`` in the config: 0 alone,
+or -1/0/+1, and so on.
+
+Each hour is predicted as a residual against day zero's mean, which is why the predictor stack
+uses ``InputsAndResidualsDayZero`` and the normaliser is a sigma per hour of day rather than
+per lead time.
+
+The ``--min-lat/--max-lat/--min-lon/--max-lon`` overrides are what make RQ3's transfer runs
+possible: they point a Denmark-trained checkpoint at NW America or N Africa without retraining,
+which works because the denoiser rebuilds its mesh when the grid changes.
+
+Writes ``predictions_<tag>.nc`` and ``targets_<tag>.nc`` under Predictions/<run-id>/.
+Computes no metrics.
+"""
+
 import argparse
 import os
 import sys
 import time
+from pathlib import Path
 
 import jax
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -10,13 +30,13 @@ import numpy as np
 import xarray as xr
 import haiku as hk
 
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis')
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / "Googles_gencast"))
+sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from graphcast import xarray_jax
 from modified_Gencast.stat_loader import load_stats
 from modified_Gencast.ou_noise import build_noise_stacked
-from modified_Gencast.report_diurnal import run_diurnal_report
 from modified_Gencast.helper_fun import (
     run_settings, parse_region, build_loader, load_checkpoint,
     build_predictor_eval, save_to_s3,
@@ -33,14 +53,38 @@ def main():
     parser.add_argument("--num-ensemble", type=int, default=8)
     parser.add_argument("--noise-method", type=str, default="ou", choices=["ou", "fixed"])
     parser.add_argument("--ou-rho", type=float, default=0.1)
+    parser.add_argument("--stochastic-churn-rate", type=float, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--preload", action="store_true", help="Pull the hourly eval range into RAM.")
+    parser.add_argument("--output-root", type=str, default=None)
     parser.add_argument("--no-s3", action="store_true")
     parser.add_argument("--plots-only", action="store_true", help="Load cached predictions; skip inference.")
+    # Region override: allows running a checkpoint trained on one region against another (exp5 transfer).
+    parser.add_argument("--min-lat", type=float, default=None)
+    parser.add_argument("--max-lat", type=float, default=None)
+    parser.add_argument("--min-lon", type=float, default=None)
+    parser.add_argument("--max-lon", type=float, default=None)
+    parser.add_argument("--region-name", type=str, default=None)
     args = parser.parse_args()
 
     model_path, setup = run_settings(args.run_id, args.step)
     args.model_path = model_path
+    if args.stochastic_churn_rate is not None:
+        setup.sampler_config = setup.sampler_config.replace(stochastic_churn_rate=args.stochastic_churn_rate)
+
+    # sets up the sampling settings, to work with both exp 4 and 5 
+    region_override = {}
+    for key, value in (("min_lat", args.min_lat), ("max_lat", args.max_lat),
+                       ("min_lon", args.min_lon), ("max_lon", args.max_lon)):
+        if value is not None:
+            region_override[key] = value
+    if region_override:
+        setup.config["task_config"].setdefault("region", {})
+        setup.config["task_config"]["region"].update(region_override)
+        print(f"Region override applied: {setup.config['task_config']['region']}")
+    if args.region_name in {"nw_america", "n_africa"}:
+        setup.config["training_config"]["stats_cache_version"] = "v2"
+
     training_config = setup.config["training_config"]
     if training_config.get("sampler_type", "fixed") != "daily_stats":
         raise ValueError("eval_daily.py is for daily-stats (exp4) models; use eval.py / eval_continuous.py otherwise.")
@@ -51,11 +95,14 @@ def main():
     boundary_margin = setup.config["task_config"].get("boundary_margin_degrees", 0.0)
 
     run_id = args.run_id
-    out_dir = os.path.join(DEFAULT_OUTPUT, run_id)
+    output_root = args.output_root or DEFAULT_OUTPUT
+    out_dir = os.path.join(output_root, run_id)
     os.makedirs(out_dir, exist_ok=True)
     ckpt_step = os.path.splitext(os.path.basename(model_path))[0]
     tag = (f"{run_id}_{ckpt_step}_{args.start_date}_{args.end_date}_daily_{args.noise_method}"
-           + (f"_rho{args.ou_rho}" if args.noise_method == "ou" else ""))
+           + (f"_{args.region_name}" if args.region_name else "")
+           + (f"_rho{args.ou_rho}" if args.noise_method == "ou" else "")
+           + (f"_churn{args.stochastic_churn_rate}" if args.stochastic_churn_rate is not None else ""))
     pred_path = os.path.join(out_dir, f"predictions_{tag}.nc")
     target_path = os.path.join(out_dir, f"targets_{tag}.nc")
 
@@ -71,17 +118,7 @@ def main():
     print(f"  output: {out_dir}")
     print(separator + "\n")
 
-    if args.plots_only:
-        for path in (pred_path, target_path):
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"--plots-only requires cached file {path}")
-        print(f"Loading cached predictions → {pred_path}")
-        run_diurnal_report(
-            xr.open_dataset(pred_path), xr.open_dataset(target_path), region, args.num_ensemble,
-            args.start_date, run_id, out_dir, tag, args.no_s3, layout="daily",
-            model_path=model_path)
-        return
-
+    # load the data 
     loader = build_loader(setup, args.start_date, args.end_date, args.seed, shuffle=False, preload=args.preload)
     sampler = loader.sampler
     if sampler.data_step_hours != 1:
@@ -101,6 +138,8 @@ def main():
     if num_days == 0:
         raise ValueError("No evaluable days in the requested range.")
 
+
+    # Load the checkpoint and functions to run the model 
     print("Loading checkpoint...")
     ckpt = load_checkpoint(model_path, setup)
     params = ckpt.params
@@ -135,6 +174,7 @@ def main():
     wall_time = time.time()
 
     for day_index, start_idx in enumerate(valid_window_starts):
+        # creates an input batch for each day, one row per hour the model must reconstruct
         hour_samples = []
         for hour in hours:
             sampler.batch_target_hour = hour
@@ -151,6 +191,7 @@ def main():
              for hour, sample in zip(hours, hour_samples)], dim="batch")
         targets_template = day_targets * np.nan
 
+        # builds the ensemble: each member gets its own keys and diffusion noise, and its own copy of the day's batch
         member_rng_pairs = [jax.random.split(jax.random.fold_in(rng, day_index * args.num_ensemble + m)) for m in range(args.num_ensemble)]
         noise_rng_keys = [pair[0] for pair in member_rng_pairs]
         model_rng_keys = [pair[1] for pair in member_rng_pairs]
@@ -168,6 +209,7 @@ def main():
         day_prediction = run_forward_pmap(
             rngs_stacked, inputs_stacked, template_stacked, forcings_stacked, noise_stacked, lead_time_schedule)
 
+        # turns the model output back into a day of 24 hours per ensemble member
         day_prediction = xr.concat(
             [day_prediction.isel(sample=m, drop=True).squeeze("time", drop=True)
              .rename({"batch": "hour"}).expand_dims({"ensemble": [m]})
@@ -185,7 +227,7 @@ def main():
             print(f"  day {day_index + 1}/{num_days}  {np.datetime_as_string(day_date, unit='D')}  "
                   f"{time.time() - wall_time:.1f}s")
             wall_time = time.time()
-
+    # saves the predicitons 
     predictions_ds = xr.concat(all_predictions, dim="forecast")
     targets_ds = xr.concat(all_targets, dim="forecast")
 
@@ -195,10 +237,6 @@ def main():
     if not args.no_s3:
         save_to_s3(pred_path, run_id)
         save_to_s3(target_path, run_id)
-
-    run_diurnal_report(
-        predictions_ds, targets_ds, region, args.num_ensemble, args.start_date, run_id, out_dir, tag, args.no_s3,
-        layout="daily", model_path=model_path)
 
 
 if __name__ == "__main__":

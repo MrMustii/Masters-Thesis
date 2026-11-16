@@ -1,7 +1,27 @@
+"""Continuous hourly rollout. Step 3 of the pipeline, for exp3. MODE=exp3 in lumi_eval.sh.
+
+Rolls a lead-time-conditioned checkpoint forward one hour at a time from 00 UTC daily starts,
+out to ``--forecast-hours``, so the result is an hourly trajectory rather than 12h snapshots.
+That trajectory is what RQ2 asks about, and it only works because the denoiser was trained
+with lead-time conditioning.
+
+Noise is generated up front for the whole chunk by ``ou_noise.build_noise_stacked``, so a
+member's hours are correlated with each other rather than drawn independently. Which
+construction is used is the thing exp3 varies:
+
+    --noise-method fixed   one draw reused at every hour
+    --noise-method ou      Ornstein-Uhlenbeck, correlation length set by --ou-rho
+
+Chunks are written as separate files and concatenated along ``forecast`` at the end, so a
+timeout loses one chunk rather than the whole run. Writes ``predictions_<tag>.nc`` and
+``targets_<tag>.nc`` under Predictions/<run-id>/. Computes no metrics.
+"""
+
 import argparse
 import os
 import sys
 import time
+from pathlib import Path
 
 import jax
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -11,14 +31,14 @@ import xarray as xr
 import haiku as hk
 jax.config.update("jax_default_matmul_precision", "highest")
 
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis')
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / "Googles_gencast"))
+sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from graphcast import xarray_jax
 from modified_Gencast import regional_utils
 from modified_Gencast.stat_loader import load_stats
 from modified_Gencast.ou_noise import build_noise_stacked
-from modified_Gencast.report_diurnal import run_diurnal_report
 from modified_Gencast.helper_fun import (
     run_settings, parse_steps, parse_region, build_loader,
     load_checkpoint, build_predictor_eval, to_forecast_hour, save_to_s3, print_config,
@@ -38,13 +58,13 @@ def main():
     parser.add_argument("--forecast-hours", type=int, default=168, help="Total horizon in hours, AR-rolled in chunks of max_horizon_hours.")
     parser.add_argument("--noise-method", type=str, default="ou", choices=["ou", "fixed"])
     parser.add_argument("--ou-rho", type=float, default=0.1)
-    parser.add_argument("--stochastic-churn-rate", type=float, default=None,
-                        help="Override the sampler's stochastic_churn_rate at inference. 0 turns churn off (deterministic per-step reverse diffusion)")
+    parser.add_argument("--stochastic-churn-rate", type=float, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    # shifts every window's random key so a partial rerun draws keys disjoint from the cache it is repairing
+    parser.add_argument("--rng-window-offset", type=int, default=0)
+    parser.add_argument("--output-root", type=str, default=None)
     parser.add_argument("--no-s3", action="store_true")
-    parser.add_argument("--plots-only", action="store_true", help="Load cached predictions; skip inference.")
-    parser.add_argument("--boundary-margin-degrees", type=float, default=0.0,
-                        help="Lateral boundary forcing margin in degrees. Default 0 disables truth injection at the domain edge (free-running rollout).")
+    parser.add_argument("--boundary-margin-degrees", type=float, default=0.0)
     args = parser.parse_args()
 
     model_path, setup = run_settings(args.run_id, args.step)
@@ -63,16 +83,18 @@ def main():
 
     chunk_size = max_horizon_hours
     num_ar_steps = int(np.ceil(args.forecast_hours / chunk_size))
-    total_hours = num_ar_steps * chunk_size 
+    total_hours = num_ar_steps * chunk_size
+    eval_hours = args.forecast_hours
 
     run_id = args.run_id
-    out_dir = os.path.join(DEFAULT_OUTPUT, run_id)
+    output_root = args.output_root or DEFAULT_OUTPUT
+    out_dir = os.path.join(output_root, run_id)
     os.makedirs(out_dir, exist_ok=True)
 
     ckpt_step = os.path.splitext(os.path.basename(model_path))[0]
     tag = (
         f"{run_id}_{ckpt_step}_{args.start_date}_{args.end_date}"
-        f"_AR{total_hours}h_{args.noise_method}"
+        f"_AR{eval_hours}h_{args.noise_method}"
         + (f"_rho{args.ou_rho}" if args.noise_method == "ou" else "")
         + (f"_churn{args.stochastic_churn_rate}" if args.stochastic_churn_rate is not None else "")
         + (f"_margin{boundary_margin}" if boundary_margin > 0 else "")
@@ -82,23 +104,10 @@ def main():
     pred_path = os.path.join(out_dir, f"predictions_{tag}.nc")
     target_path  = os.path.join(out_dir, f"targets_{tag}.nc")
 
-    if args.plots_only:
-        if not os.path.exists(pred_path):
-            raise FileNotFoundError(f"--plots-only requires cached predictions at {pred_path}")
-        if not os.path.exists(target_path):
-            raise FileNotFoundError(f"--plots-only requires cached targets at {target_path}")
-        print(f"\nLoading cached predictions → {pred_path}")
-        predictions_ds = xr.open_dataset(pred_path, chunks={"forecast": 24})
-        targets_ds = xr.open_dataset(target_path, chunks={"forecast": 24})
-        run_diurnal_report(
-            predictions_ds, targets_ds, region, args.num_ensemble,
-            args.start_date, run_id, out_dir, tag, args.no_s3, layout="rollout",
-            autoregressive_steps=total_hours, ar_window_hours=chunk_size)
-        return
-
     loader = build_loader(setup, args.start_date, args.end_date, args.seed, ar_steps=total_hours, force_sampler_type="fixed")
+    # Input is 12 and 00, and the output is 00+t
     window_hours = (loader.dataset.time.values[loader.window_starts].astype("datetime64[h]").astype(np.int64)) % 24
-    loader.window_starts = loader.window_starts[(window_hours == 0) | (window_hours == 12)]
+    loader.window_starts = loader.window_starts[window_hours == 12]
     num_windows = len(loader)
 
     print("Loading checkpoint...")
@@ -132,12 +141,16 @@ def main():
     input_times = np.array([np.timedelta64(-input_step, "h"), np.timedelta64(0, "h")])  # [-12h, 0h], matches sampler
     
     input_var_list = list(setup.task.input_variables)
-    non_temp_vars = [v for v in input_var_list if v != TARGET_VAR]
+    target_var_list = list(setup.task.target_variables)
+    # Prognostic vars (t2m + geopotential) roll from the model's own output at each chunk boundary, not truth.
+    prognostic_vars = [v for v in input_var_list if v in target_var_list]
+    non_prognostic_vars = [v for v in input_var_list if v not in prognostic_vars]
     forcing_vars = list(setup.task.forcing_variables)
 
     print(f"\nPer-member AR: {num_windows} windows x {num_ar_steps} steps x {chunk_size}h "
-          f"x {args.num_ensemble} members → {total_hours}h")
+          f"x {args.num_ensemble} members → {total_hours}h rolled, truncated to {eval_hours}h")
 
+    # Save every 25 predicitons 
     flush_every = 25
     part_dir = os.path.join(out_dir, f"parts_{tag}")
     os.makedirs(part_dir, exist_ok=True)
@@ -152,7 +165,9 @@ def main():
     prediction_buffer, target_buffer = [], []
     wall_time_wind = time.time()
 
-    for win_idx, batch in enumerate(loader):
+    remaining_windows = len(loader)
+    for local_win_idx, batch in enumerate(loader):
+        win_idx = args.rng_window_offset + windows_done + local_win_idx
         window_timestamps = np.asarray(batch["conditioning"]["abs_target_times"]).squeeze()
         inputs = batch["inputs"].squeeze("batch", drop=True) if "batch" in batch["inputs"].dims else batch["inputs"]
         targets = batch["targets"].squeeze("batch", drop=True) if "batch" in batch["targets"].dims else batch["targets"]
@@ -163,11 +178,13 @@ def main():
         chunck_predictions = [] 
         for step in range(num_ar_steps):
             t_step = time.time()
+            # gives each member its own noise and model keys, reproducible across runs
             rng_offset = (win_idx * num_ar_steps + step) * args.num_ensemble
             member_rng_pairs = [jax.random.split(jax.random.fold_in(rng, rng_offset + m)) for m in range(args.num_ensemble)]
             noise_rng_keys = [p[0] for p in member_rng_pairs]
             model_rng_keys = [p[1] for p in member_rng_pairs]
 
+            # prepares the target template used for boundary replacement
             if boundary_margin and boundary_margin > 0:
                 margin = regional_utils.boundary_margin_mask(targets, boundary_margin)
                 targets_template = xr.concat(
@@ -179,24 +196,28 @@ def main():
                     [(targets.isel(time=[0]).assign_coords(time=placeholder_time) * np.nan)
                      .expand_dims({"batch": [h]}) for h in range(chunk_size)], dim="batch")
 
+            # collects the ERA5 forcings covering this chunk's hours
             chunk_timestamps = np.array([chunk_start + np.timedelta64(h + 1, "h") for h in range(chunk_size)])
             chunk_forcings = loader.dataset[forcing_vars].sel(time=chunk_timestamps).compute()
             chunk_forcings = xr.concat(
                 [chunk_forcings.isel(time=[h]).assign_coords(time=placeholder_time)
                  .expand_dims({"batch": [h]}) for h in range(chunk_size)], dim="batch")
 
+            # reshapes everything into the layout pmap expects, one member per device
             inputs_stacked = xr.concat(
                 [xr.concat([member_inputs[m].expand_dims({"batch": [b]}) for b in range(chunk_size)], dim="batch")
                  .expand_dims({"sample": [m]}) for m in range(args.num_ensemble)], dim="sample")
             template_stacked = xr.concat([targets_template.expand_dims({"sample": [m]}) for m in range(args.num_ensemble)], dim="sample")
             forcings_stacked = xr.concat([chunk_forcings.expand_dims({"sample": [m]}) for m in range(args.num_ensemble)], dim="sample")
 
+            # draws the diffusion noise for this chunk under the chosen noise method
             noise_templates = [ targets.isel(time=[0]).assign_coords(time=[np.timedelta64(h + 1, "h")]) for h in range(chunk_size)]
             noise_stacked = build_noise_stacked( noise_templates, args.ou_rho, args.noise_method, noise_rng_keys)
             rngs_stacked = jnp.stack(model_rng_keys)
 
             chunk_predictions = run_forward_pmap(rngs_stacked, inputs_stacked, template_stacked, forcings_stacked, noise_stacked, lead_time_schedule)
 
+            # puts the pmap output back into a normal (ensemble, time) dataset
             chunk_predictions = xr.concat(
                 [chunk_predictions.isel(sample=m, drop=True).squeeze("time", drop=True)
                  .rename({"batch": "time"})
@@ -205,34 +226,40 @@ def main():
             chunk_predictions = xr.Dataset({v: xr.DataArray(np.asarray(chunk_predictions[v].values), dims=chunk_predictions[v].dims, coords=chunk_predictions[v].coords) for v in chunk_predictions.data_vars})
             chunck_predictions.append(chunk_predictions)
 
+            # hands the next chunk its inputs: predictions for the prognostics, ERA5 for the rest
             if step < num_ar_steps - 1:
                 next_chunk_start = chunk_start + np.timedelta64(chunk_size, "h")
                 next_input_times = np.array([next_chunk_start - np.timedelta64(input_step, "h"), next_chunk_start])
-                next_non_temp = (loader.dataset[non_temp_vars]
-                                 .sel(time=next_input_times)
-                                 .assign_coords(time=input_times)
-                                 .compute())
+                next_non_prognostic = (loader.dataset[non_prognostic_vars]
+                                       .sel(time=next_input_times)
+                                       .assign_coords(time=input_times)
+                                       .compute())
                 next_member_inputs = []
                 for m in range(args.num_ensemble):
-                    t_prev = chunk_predictions[TARGET_VAR].isel(ensemble=m, time=chunk_size - input_step - 1)
-                    t_last = chunk_predictions[TARGET_VAR].isel(ensemble=m, time=chunk_size - 1)
-                    temp_frame = xr.DataArray(
-                        np.stack([t_prev.values, t_last.values], axis=0),
-                        dims=["time", "lat", "lon"],
-                        coords={"time": input_times, "lat": t_prev.lat, "lon": t_prev.lon},
-                        name=TARGET_VAR)
-                    next_member_inputs.append(xr.merge([next_non_temp, temp_frame])[input_var_list])
+                    prognostic_frames = []
+                    for var in prognostic_vars:
+                        v_prev = chunk_predictions[var].isel(ensemble=m, time=chunk_size - input_step - 1)
+                        v_last = chunk_predictions[var].isel(ensemble=m, time=chunk_size - 1)
+                        prognostic_frames.append(xr.DataArray(
+                            np.stack([v_prev.values, v_last.values], axis=0),
+                            dims=["time"] + list(v_prev.dims),
+                            coords={"time": input_times, **{d: v_prev[d] for d in v_prev.dims}},
+                            name=var))
+                    next_member_inputs.append(
+                        xr.merge([next_non_prognostic] + prognostic_frames)[input_var_list])
                 member_inputs = next_member_inputs
                 chunk_start = next_chunk_start
 
-            if win_idx == 0:
+            if local_win_idx == 0:
                 print(f"  [timing] macro step {step}: {time.time() - t_step:.1f}s")
 
-        prediction = xr.concat(chunck_predictions, dim="time").assign_coords(time=[np.timedelta64(h + 1, "h") for h in range(total_hours)])
-        hours_arr = np.arange(1, total_hours + 1)
-        targets_abs = targets.isel(time=slice(0, total_hours))
-        prediction = to_forecast_hour(prediction, window_timestamps[:total_hours], hours_arr, window_start)
-        targets_abs = to_forecast_hour(targets_abs, window_timestamps[:total_hours], hours_arr, window_start)
+        prediction = (xr.concat(chunck_predictions, dim="time")
+                      .isel(time=slice(0, eval_hours))
+                      .assign_coords(time=[np.timedelta64(h + 1, "h") for h in range(eval_hours)]))
+        hours_arr = np.arange(1, eval_hours + 1)
+        targets_abs = targets.isel(time=slice(0, eval_hours))
+        prediction = to_forecast_hour(prediction, window_timestamps[:eval_hours], hours_arr, window_start)
+        targets_abs = to_forecast_hour(targets_abs, window_timestamps[:eval_hours], hours_arr, window_start)
         prediction_buffer.append(prediction)
         target_buffer.append(targets_abs)
         if len(prediction_buffer) >= flush_every:
@@ -245,8 +272,8 @@ def main():
             prediction_buffer.clear()
             target_buffer.clear()
 
-        if win_idx % 5 == 0 or win_idx == num_windows - 1:
-            print(f"  window {win_idx + 1}/{num_windows}  "
+        if local_win_idx % 5 == 0 or local_win_idx == remaining_windows - 1:
+            print(f"  window {local_win_idx + 1}/{remaining_windows}  "
                   f"forecast={np.datetime_as_string(window_start, unit='h')}  "
                   f"{time.time() - wall_time_wind:.1f}s")
             wall_time_wind = time.time()
@@ -273,14 +300,6 @@ def main():
     if not args.no_s3:
         save_to_s3(pred_path, run_id)
         save_to_s3(target_path, run_id)
-
-    predictions_ds = xr.open_dataset(pred_path)
-    targets_ds = xr.open_dataset(target_path)
-
-    run_diurnal_report(
-        predictions_ds, targets_ds, region, args.num_ensemble,
-        args.start_date, run_id, out_dir, tag, args.no_s3, layout="rollout",
-        autoregressive_steps=total_hours, ar_window_hours=chunk_size)
 
 
 if __name__ == "__main__":

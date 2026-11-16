@@ -1,3 +1,18 @@
+"""Fixed-lead rollout. Step 3 of the pipeline, for exp1 and exp2. MODE=exp2 in lumi_eval.sh.
+
+Rolls a checkpoint forward in fixed 12h steps from one initialisation per day, which is the
+layout the exp2 variable-set sweep and the boundary-margin ablation are scored on. Inputs are
+the 00 and 12 UTC frames and the forecast starts at 12 UTC.
+
+Writes ``predictions_<tag>.nc`` and ``targets_<tag>.nc`` under Predictions/<run-id>/, indexed
+by (forecast, hour) so forecasts from different days can be aligned on valid time later. The
+grid written is the full loading region, boundary belt included - the report layer is what
+crops it off. Computes no metrics.
+
+    --autoregressive-steps     how many 12h steps to roll (14 covers a week)
+    --boundary-margin-degrees  >0 overwrites the belt with ERA5 each step; default 0 is off
+"""
+
 import argparse
 import os
 import sys
@@ -9,15 +24,15 @@ import numpy as np
 import xarray as xr
 import haiku as hk
 
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis')
+REPOSITORY_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(REPOSITORY_ROOT, 'Googles_gencast'))
+sys.path.insert(0, REPOSITORY_ROOT)
 
 from graphcast import rollout
 from graphcast import xarray_jax
 
 from modified_Gencast import regional_utils
 from modified_Gencast.stat_loader import load_stats
-from modified_Gencast.report_tmax import run_tmax_report, run_tmax_plots_only
 from modified_Gencast.helper_fun import build_loader, run_settings, parse_steps, parse_region, load_checkpoint, build_predictor_eval, to_forecast_hour, print_config, save_to_s3
 from gencast_infernce.config import DEFAULT_OUTPUT
 
@@ -34,11 +49,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--autoregressive-steps", type=int, default=1)
     parser.add_argument("--no-s3", action="store_true")
-    parser.add_argument("--plots-only", action="store_true",help="Load cached predictions + metrics; skip inference and metric computation.")
-    parser.add_argument("--recompute-metrics", action="store_true", help="Load cached predictions and RECOMPUTE metrics")
-    parser.add_argument("--boundary-margin-degrees", type=float, default=0.0,
-                        help="Lateral boundary forcing margin in degrees. Default 0 disables truth injection at the domain edge (free-running rollout). Pass "
-                             "the training config's value (e.g. 8.5) to re-enable forcing ")
+    parser.add_argument("--boundary-margin-degrees", type=float, default=0.0)
     args = parser.parse_args()
 
     model_path, setup = run_settings(args.run_id, args.step)
@@ -61,35 +72,8 @@ def main():
 
     pred_path = os.path.join(out_dir, f"predictions_{tag}.nc")
     target_path = os.path.join(out_dir, f"targets_{tag}.nc")
-    cached = os.path.exists(pred_path) and os.path.exists(target_path)
-
 
     print_config(setup, args, output_step, region, out_dir)
-
-    if args.plots_only:
-        if not cached:
-            raise FileNotFoundError(f"--plots-only requires cached predictions at {pred_path}")
-        print(f"\nLoading cached predictions → {pred_path}")
-        predictions_ds = xr.open_dataset(pred_path)
-        targets_ds = xr.open_dataset(target_path)
-        run_tmax_plots_only(
-            predictions_ds, targets_ds, region, args.num_ensemble,
-            run_id, out_dir, tag)
-        return
-
-    if args.recompute_metrics:
-        if not cached:
-            raise FileNotFoundError(f"--recompute-metrics requires cached predictions at {pred_path}")
-        print(f"\nLoading cached predictions → {pred_path}")
-        predictions_ds = xr.open_dataset(pred_path)
-        targets_ds = xr.open_dataset(target_path)
-        run_tmax_report(
-            predictions_ds, targets_ds, region, args.num_ensemble,
-            run_id, out_dir, tag, args.no_s3, setup,
-            model_path=args.model_path,
-            autoregressive_steps=args.autoregressive_steps,
-        )
-        return
 
     loader = build_loader( setup, args.start_date, args.end_date, args.seed, ar_steps=args.autoregressive_steps)
     window_hours = (loader.dataset.time.values[loader.window_starts].astype("datetime64[h]").astype(np.int64)) % 24
@@ -181,12 +165,6 @@ def main():
     if not args.no_s3:
         save_to_s3(pred_path, run_id)
         save_to_s3(target_path, run_id)
-
-    run_tmax_report(
-        predictions_ds, targets_ds, region, args.num_ensemble,
-        run_id, out_dir, tag, args.no_s3, setup,
-        model_path=args.model_path,
-        autoregressive_steps=args.autoregressive_steps,)
 
 
 if __name__ == "__main__":

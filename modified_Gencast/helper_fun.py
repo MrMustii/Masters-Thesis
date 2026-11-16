@@ -1,8 +1,25 @@
+"""Shared machinery for the eval entry points: checkpoints, predictor stack, loaders.
+
+``eval.py``, ``eval_continuous.py``, ``eval_daily.py`` and ``eval_original_weights.py`` all
+go through here, so the differences between the experiments are resolved in one place
+instead of four.
+
+    run_settings           find a run's checkpoint and reload the config saved beside it
+    load_checkpoint        unpickle parameters into the CheckPoint the predictor expects
+    build_predictor_eval   assemble the predictor stack a rollout actually runs
+    build_loader           pick the sampler the config asks for and wrap it in a loader
+    to_forecast_hour       re-index a rollout from lead time to (forecast, hour)
+    save_to_s3             copy a finished prediction file up to LUMI-O
+"""
+
 import os
 import pickle
-import sys 
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis/Googles_gencast')
-sys.path.insert(0, '/project/project_465002687/Masters-Thesis')
+import sys
+from pathlib import Path
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / "Googles_gencast"))
+sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from graphcast import nan_cleaning
 from graphcast import normalization
@@ -14,13 +31,14 @@ import s3fs
 from modified_Gencast.data_loaders import (
     Era5DataLoaderV2, DailyStatsSampler, FixedLeadTimeSampler, VariableLeadTimeSampler,
 )
-from modified_Gencast.lumio_buckets import GENCAST_LEVELS, get_loading_region, bucket_name, lumio
+from modified_Gencast.lumio_buckets import (GENCAST_LEVELS, get_loading_region, bucket_name, format_and_slice, lumio)
 from gencast_infernce.config import SCRATCH_PATH, WORKING_DIR
 
 
 
 S3_PRED_ROOT = "era5-lumi/predictions"
-CKPT_DIR = os.path.normpath(os.path.join(WORKING_DIR, SCRATCH_PATH, "checkpoints"))
+_LUMI_CHECKPOINTS = "/scratch/project_465002687/checkpoints"
+CKPT_DIR = (_LUMI_CHECKPOINTS if os.path.isdir(_LUMI_CHECKPOINTS) else os.path.normpath(os.path.join(WORKING_DIR, SCRATCH_PATH, "checkpoints")))
 
  
 def run_settings(run_id: str, step=None):
@@ -44,6 +62,11 @@ def run_settings(run_id: str, step=None):
  
  
 def load_checkpoint(path: str, setup) -> CheckPoint:
+    """Unpickle parameters and wrap them with the configs the predictor needs.
+
+    Training saves only the parameters, so the architecture comes from the run's own
+    config.json rather than from the checkpoint file.
+    """
     with open(path, "rb") as f:
         params = pickle.load(f)
     return CheckPoint(
@@ -83,6 +106,18 @@ class InputsAndResidualsDayZero(normalization.InputsAndResiduals):
 
 
 def build_predictor_eval(stats, ckpt: CheckPoint, boundary_margin_degrees=0.0, sampler_type="fixed"):
+    """Assemble the predictor stack for inference, each wrapper outside the previous one.
+
+    GenCast, then residual normalisation, then NaN cleaning when sea surface temperature is
+    in the variable set, then boundary forcing when a margin is asked for. The order is not
+    arbitrary: BoundaryForcedPredictor overwrites cells with ERA5 in raw units, so it has to
+    sit outside normalisation.
+
+    When diffs_stddev is a dict rather than one Dataset - exp4, which has a sigma per hour of
+    day - the entries are concatenated along a batch dimension in hour order, so row h of a
+    24-row batch is normalised by hour h's sigma. tests/test_eval_daily.py checks that
+    alignment holds.
+    """
     has_sst = "sea_surface_temperature" in (ckpt.task_config.input_variables + ckpt.task_config.target_variables)
     predictor = GenCast(
         task_config=ckpt.task_config,
@@ -136,6 +171,14 @@ def parse_region(setup):
  
  
 def build_loader(setup, time_start, time_end, seed, ar_steps=None, batch_size=1, shuffle=False, resolution=0.25, preload=False, force_sampler_type=None):
+    """Build the loader for one run: choose the sampler the config names, then wrap it.
+
+    Deliberately mirrors what training did, so an eval run sees data shaped the same way.
+    daily_stats runs also open the ``-daily`` bucket here and widen the slice by the largest
+    day offset, so a config asking for day -2 still has day -2 available at the start of the
+    window. ``force_sampler_type`` overrides the config's choice, letting a rollout sample
+    differently from how the checkpoint was trained.
+    """
     regional_utils.patch_samplers_utils()
     training_config = setup.config["training_config"]
     input_step_hours = int(training_config["time_step"].removesuffix("h"))
@@ -152,6 +195,7 @@ def build_loader(setup, time_start, time_end, seed, ar_steps=None, batch_size=1,
         daily_bucket = bucket_name(GENCAST_LEVELS, loading_region) + "-daily"
         print(f"[build_loader] Opening daily bucket {daily_bucket} ...")
         daily_dataset = xr.open_zarr(s3fs.S3Map(root=daily_bucket, s3=lumio(), check=False), consolidated=True).sortby("time")
+        daily_dataset = format_and_slice(daily_dataset, loading_region)
         levels = list(task_config_dict["pressure_levels"])
         if levels and "level" in daily_dataset.dims:
             daily_dataset = daily_dataset.sel(level=levels)
@@ -215,6 +259,12 @@ def build_loader(setup, time_start, time_end, seed, ar_steps=None, batch_size=1,
  
   
 def to_forecast_hour(dataset, abs_target_times, hours_arr, forecast_time):
+    """Re-index one rollout from lead time to absolute hour, under a forecast coordinate.
+
+    Rollouts come back indexed by lead time, but predictions are stored as
+    (forecast, hour) so forecasts from different initialisations can later be aligned on
+    the same valid time.
+    """
     return (
         dataset
         .assign_coords(time=abs_target_times)
@@ -226,6 +276,7 @@ def to_forecast_hour(dataset, abs_target_times, hours_arr, forecast_time):
  
  
 def print_config(setup, args, target_lead: int, region, out_dir: str):
+    """Print the resolved eval configuration, so the Slurm log records exactly what ran."""
     task_config = setup.config["task_config"]
     separator = "=" * 60
     target_variables = list(task_config.get("target_surface_variables", [])) + list(task_config.get("target_atmospheric_variables", []))
@@ -257,6 +308,11 @@ def print_config(setup, args, target_lead: int, region, out_dir: str):
 
 
 def save_to_s3(local_path: str, run_id: str):
+    """Copy a finished prediction file to LUMI-O; a failed upload warns and keeps the local copy.
+
+    Deliberately non-fatal: the local file under Predictions/ is the one the report layer
+    reads, so losing the upload must not throw away a completed rollout.
+    """
     try:
         fs = lumio()
         dest = f"{S3_PRED_ROOT}/{run_id}/{os.path.basename(local_path)}"
@@ -265,4 +321,3 @@ def save_to_s3(local_path: str, run_id: str):
         print(f"  upload done")
     except Exception as error:
         print(f"  WARNING: S3 upload failed ({error}). File kept locally.")
- 
