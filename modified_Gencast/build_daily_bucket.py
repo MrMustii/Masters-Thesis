@@ -1,3 +1,16 @@
+"""Build or extend the daily mean/max/min bucket. Run once per region, then to extend it.
+
+Coarsens every time-dependent variable in the hourly store to one value per day, three ways,
+and writes ``<era5 bucket>-daily``. Two consumers: exp4 reads it as the model's input, and
+``load_true_daily_tmax`` reads it as observed Tmax when scoring every experiment.
+
+Appends rather than rewrites, so re-running only fetches the days that are missing. Partial
+days at the end of the span are dropped so every stored day has all 24 hours behind it.
+
+    python modified_Gencast/build_daily_bucket.py
+    python modified_Gencast/build_daily_bucket.py --start-date 2021-01-01 --end-date 2021-12-31
+"""
+
 import argparse
 import json
 import os
@@ -18,9 +31,7 @@ except ImportError:
     CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "traninig configs")
     print(f"Warning: Could not import CONFIGS_DIR. Falling back to: {CONFIGS_DIR}")
 
-from modified_Gencast.lumio_buckets import (
-    DOWNLOAD_TIME_CHUNK, GENCAST_LEVELS, get_loading_region, bucket_name, load, lumio, missing_data,
-)
+from modified_Gencast.lumio_buckets import DOWNLOAD_TIME_CHUNK, GENCAST_LEVELS, get_loading_region, bucket_name, load, lumio, missing_data
 
 HOURS_PER_DAY = 24
 SEGMENT_DAYS = 4 * DOWNLOAD_TIME_CHUNK  # multiples of the write chunk keep appends chunk-aligned
@@ -28,11 +39,8 @@ SEGMENT_DAYS = 4 * DOWNLOAD_TIME_CHUNK  # multiples of the write chunk keep appe
 
 def main():
     parser = argparse.ArgumentParser(description="Build (or extend) the daily-statistics bucket.")
-    parser.add_argument("--start-date", type=str, default=None,
-                        help="Override start (YYYY-MM-DD); defaults to the config's earliest train/val date.")
-    parser.add_argument("--end-date", type=str, default=None,
-                        help="Override end (YYYY-MM-DD); defaults to the config's latest train/val date. "
-                             "Pass a test year (e.g. 2021) to append it; already-stored days are skipped.")
+    parser.add_argument("--start-date", type=str, default=None)
+    parser.add_argument("--end-date", type=str, default=None)
     args = parser.parse_args()
 
     # Region and time span are shared across all experiment configs; read them from all_gencast.

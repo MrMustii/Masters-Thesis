@@ -1,3 +1,16 @@
+"""Data loading for training and evaluation: one dataset held in memory, three samplers.
+
+``Era5DataLoaderV2`` reads the configured region and span from LUMI-O once and keeps it,
+then a ``WindowSampler`` cuts (inputs, targets, forcings) windows out of it and the loader
+batches them. Which sampler is used is what makes each experiment different:
+
+    FixedLeadTimeSampler     one fixed output step, autoregressive rollout (exp2)
+    VariableLeadTimeSampler  a lead time drawn per sample, for the lead-time-conditioned
+                             denoiser (exp3)
+    DailyStatsSampler        daily mean/max/min as input, the 24 hours of that day as
+                             targets (exp4)
+"""
+
 import abc
 import dataclasses
 import os

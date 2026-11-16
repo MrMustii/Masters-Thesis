@@ -1,3 +1,26 @@
+"""Normalisation statistics, computed once per configuration and cached on LUMI-O.
+
+GenCast normalises its inputs and predicts a normalised residual, so a run needs four fields
+before it can start: mean, stddev and min to normalise the inputs, and diffs_stddev to
+normalise the residual. ``training.py`` and ``helper_fun.build_predictor_eval`` call
+``load_stats`` with a run config and pass the result to graphcast's ``InputsAndResiduals``.
+
+diffs_stddev is the field that changes shape between experiments, because each one predicts
+a different residual:
+
+    load_stats_simple    one Dataset, std of increments one output step apart     (exp2)
+    load_stats_variable  dict keyed by lead time, one entry per lead              (exp3)
+    load_stats_daily     dict keyed by hour of day, each hour minus its own day's
+                         mean, which is the quantity exp4 reconstructs            (exp4)
+
+``load_stats`` chooses between those on sampler type, except that a variable set containing
+total_precipitation_12hr takes Google's published statistics instead, since that means exp1
+is running their pretrained weights and must match how they were trained.
+
+Caches are keyed by cadence, region and training window, so changing any of those builds a
+new cache rather than silently reusing a wrong one.
+"""
+
 import dask
 import numpy as np
 import pandas as pd
@@ -17,6 +40,7 @@ from graphcast import data_utils
 zarr.config.set({'default_zarr_format': 2})
 
 def load_stats(config: dict) -> dict:
+    """Return the stat flavour this config needs: Google's for tp12, else by sampler type."""
     task_config = config["task_config"]
     all_variables = (
         list(task_config["input_variables"])
@@ -40,7 +64,12 @@ def load_stats(config: dict) -> dict:
 
 
 def load_stats_variable(config: dict) -> dict:
-    """Variable-lead-time stats: one store-wide cache per (data_step, region, years).    """
+    """Variable-lead-time stats: one diffs_stddev per lead time, for exp3's conditioning.
+
+    One cache per (data_step, region, training window). Lead times are computed in groups of
+    24 and the whole set is rewritten after each group, so a timeout costs at most one group
+    and a rerun resumes from the last saved lead time.
+    """
     task_config = config["task_config"]
     training_config = config["training_config"]
 
@@ -148,6 +177,7 @@ def load_stats_variable(config: dict) -> dict:
 
 
 def load_stats_simple(config: dict) -> dict:
+    """Fixed-lead stats: a single diffs_stddev at the model's own output step, for exp2."""
     task_config = config["task_config"]
     training_config = config["training_config"]
 
@@ -221,7 +251,13 @@ def load_stats_simple(config: dict) -> dict:
 
 
 def load_stats_daily(config: dict) -> dict:
-    """Stats for the daily-deaggregation experiments (sampler_type "daily_stats")."""
+    """Daily-deaggregation stats for exp4: hourly and daily stats merged, diffs per hour.
+
+    exp4 predicts each hour as a residual against that day's mean, so diffs_stddev is keyed
+    by hour of day (0..23) rather than by lead time, computed from the hourly field minus its
+    own day's forward-filled daily mean. Requires the daily bucket to already cover the
+    window, and raises rather than silently scoring a short period if it does not.
+    """
     task_config = config["task_config"]
     training_config = config["training_config"]
 
@@ -231,6 +267,9 @@ def load_stats_daily(config: dict) -> dict:
 
     region_str = "global" if region is None else "-".join(str(x) for x in region)
     base_key = f"era5-lumi/stats/daily_{region_str}_{time_start}_{time_end}"
+    cache_version = training_config.get("stats_cache_version")
+    if cache_version:
+        base_key += f"_{cache_version}"
     s3 = lumio()
     print(f"[load_stats_daily] Stats key: {base_key}")
 

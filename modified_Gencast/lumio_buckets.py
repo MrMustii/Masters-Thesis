@@ -1,3 +1,22 @@
+"""LUMI-O object storage: the cached ERA5 store and the derived stores read off it.
+
+Every other module gets its data through here. ERA5 is pulled from WeatherBench2 on Google
+Cloud and cached as zarr on LUMI-O, one bucket per (levels, region, tp12) combination, so a
+run reads object storage instead of refetching from the cloud every time.
+
+    load                       the entry point: fetches whatever the request needs and the
+                               store lacks, appends it, then returns the slice asked for
+    get_loading_region         widens a config's region of interest by its boundary margin,
+                               which is what makes training see the belt
+    load_p90_threshold         daily p90 of Tmax, written by build_tmax_threshold
+    load_hourly_p90_threshold  p90 per hour of day, the tail weight for hourly twCRPS
+    load_true_daily_tmax       observed daily Tmax, cropped to a given scoring grid
+
+Bucket roots are written with ``mode='w-'``: zarr's ``'w'`` wipe goes through s3fs and
+removes the bucket itself, which destroyed a store once. Stats and threshold stores live at
+a prefix inside ``era5-lumi`` rather than at a bucket root, so those can use ``'w'`` safely.
+"""
+
 import s3fs
 import os
 import pandas as pd
@@ -19,7 +38,7 @@ GENCAST_LEVELS = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 100
 
 
 def lumio():
-    # To access the LUMI S3 bucket
+    """S3 filesystem for LUMI-O, taking credentials from the environment or ~/.lumio_creds."""
     creds_file = os.path.expanduser('~/.lumio_creds')
     if not ('LUMIO_ACCESS_KEY' in os.environ and 'LUMIO_SECRET_KEY' in os.environ):
         if os.path.exists(creds_file):
@@ -37,6 +56,7 @@ def lumio():
 
 
 def bucket_name(levels, region=None, tp12=False):
+    """Bucket name encoding the level set, region and tp12 flag; dots become 'p' to stay S3-safe."""
     if levels is None:
         levels = 'lall'
     elif not levels:
@@ -56,6 +76,7 @@ def bucket_name(levels, region=None, tp12=False):
 
 
 def missing_data(time_start, time_end, existing_times, freq='1h'):
+    """Contiguous (start, end) ranges that the request needs but the store does not yet hold."""
     needed = pd.date_range(time_start, time_end, freq=freq)
     if existing_times is None or len(existing_times) == 0:
         return [(needed[0], needed[-1])]
@@ -68,6 +89,12 @@ def missing_data(time_start, time_end, existing_times, freq='1h'):
     return sorted((missing[s], missing[e]) for s, e in zip(starts, ends))
 
 def download(time_start, time_end, variables, levels, region=None, freq='1h'):
+    """Fetch one span straight from the cloud source, cropped to region and levels.
+
+    Precipitation only exists in the GenCast-derived dataset, so asking for it switches
+    source. Longitude is normalised to [-180, 180] and a region crossing the meridian is
+    fetched as two slices and concatenated.
+    """
     source = GENCAST_SOURCE if "total_precipitation_12hr" in variables else WB2_SOURCE
     src = xr.open_zarr(source, chunks={'time': DOWNLOAD_READ_CHUNK}, storage_options={'token': 'anon'})
     wanted_times = pd.date_range(time_start, time_end, freq=freq)
@@ -84,11 +111,17 @@ def download(time_start, time_end, variables, levels, region=None, freq='1h'):
             subset = subset.sel(lat=slice(lat_max, lat_min)).isel(lat=slice(None, None, -1))
         else:
             subset = subset.sel(lat=slice(lat_min, lat_max))
-        if lon_min < 0:
-            western = subset.sel(lon=slice(lon_min % 360, 360))
-            eastern = subset.sel(lon=slice(0, lon_max))
-            subset = xr.concat([western, eastern], dim='lon')
-            subset = subset.assign_coords(lon=(((subset.lon + 180) % 360) - 180))
+        if float(subset.lon.max()) > 180:
+            lon_start = lon_min % 360
+            lon_end = lon_max % 360
+            if lon_start <= lon_end:
+                subset = subset.sel(lon=slice(lon_start, lon_end))
+            else:
+                western = subset.sel(lon=slice(lon_start, 360))
+                eastern = subset.sel(lon=slice(0, lon_end))
+                subset = xr.concat([western, eastern], dim='lon')
+            subset = subset.assign_coords(
+                lon=(((subset.lon + 180) % 360) - 180)).sortby('lon')
         else:
             subset = subset.sel(lon=slice(lon_min, lon_max))
     subset = subset.chunk({'time': DOWNLOAD_TIME_CHUNK, 'lat': -1, 'lon': -1})
@@ -184,7 +217,7 @@ def load(time_start, time_end, variables=None, levels=None, region=None, chunks=
         result = result[variables]
     if levels and 'level' in result.dims:
         result = result.sel(level=levels)
-    return result
+    return format_and_slice(result, region)
 GENERATED_VARS = {
     "year_progress_sin", "year_progress_cos",
     "day_progress_sin",  "day_progress_cos",
@@ -208,15 +241,95 @@ def get_loading_region(task_config: dict):
     return (lat_min, lat_max, lon_min, lon_max)
 
 def format_and_slice(data_store: xr.Dataset, region) -> xr.Dataset:
+    """Normalise longitude to [-180, 180], sort lat and lon ascending, then crop to region."""
     if "datetime" not in data_store.coords:
         data_store = data_store.assign_coords(datetime=data_store.time)
-    if data_store.sizes.get('lon', 0) == 1440:
-        data_store = data_store.assign_coords(lon=(((data_store.lon + 180) % 360) - 180))
-        data_store = data_store.roll(lon=(data_store.sizes['lon'] // 2), roll_coords=True).sortby("lat")
-        if region is not None:
-            lat_min, lat_max, lon_min, lon_max = region
-            data_store = data_store.sel(lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max))
+    if 'lon' in data_store.coords:
+        if float(data_store.lon.max()) > 180:
+            data_store = data_store.assign_coords(lon=(((data_store.lon + 180) % 360) - 180))
+        data_store = data_store.sortby('lon')
+    if 'lat' in data_store.coords:
+        data_store = data_store.sortby('lat')
+    if region is not None:
+        lat_min, lat_max, lon_min, lon_max = region
+        data_store = data_store.sel(
+            lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max))
     return data_store
+
+
+## Diffrente region code 
+EXP5_THRESHOLD_SUFFIXES = {"36.5-73.5--143.5--96.5", "6.5-43.5-1.5-48.5"}
+def region_suffix(region):
+    """Region tuple to bucket-name string: (36.5, 73.5, -143.5, -96.5) -> "36.5-73.5--143.5--96.5"."""
+    if region is None:
+        return None
+    return "-".join(str(value) for value in region)
+
+
+def threshold_bucket(prefix, region):
+    """Path of one threshold store: no suffix for the default region, region suffix otherwise."""
+    suffix = region_suffix(region)
+    if not suffix:
+        return f"era5-lumi/{prefix}"
+    version = "_v2" if suffix in EXP5_THRESHOLD_SUFFIXES else ""
+    return f"era5-lumi/{prefix}_{suffix}{version}"
+
+
+def load_p90_threshold(region=None):
+    """p90 of daily Tmax per (dayofyear, lat, lon). Decides which days count as hot for heatwaves."""
+    store = s3fs.S3Map(root=threshold_bucket("tmax_p90_windowed", region), s3=lumio(), check=False)
+    threshold_p90 = xr.open_zarr(store, consolidated=True)["tmax_p90"]
+    if "latitude" in threshold_p90.dims:
+        threshold_p90 = threshold_p90.rename({"latitude": "lat", "longitude": "lon"})
+    if float(threshold_p90.lon.max()) > 180:
+        threshold_p90 = threshold_p90.assign_coords(lon=(threshold_p90.lon + 180) % 360 - 180).sortby("lon")
+    return threshold_p90
+
+
+def load_hourly_p90_threshold(region=None):
+    """p90 of temperature per (dayofyear, hour_of_day, lat, lon). Tail weight for hourly twCRPS."""
+    store = s3fs.S3Map(root=threshold_bucket("temp_p90_hourly_windowed", region), s3=lumio(), check=False)
+    threshold_p90 = xr.open_zarr(store, consolidated=True)["temp_p90_hourly"]
+    if "latitude" in threshold_p90.dims:
+        threshold_p90 = threshold_p90.rename({"latitude": "lat", "longitude": "lon"})
+    if float(threshold_p90.lon.max()) > 180:
+        threshold_p90 = threshold_p90.assign_coords(lon=(threshold_p90.lon + 180) % 360 - 180).sortby("lon")
+    return threshold_p90
+
+
+def load_true_daily_tmax(start_date, end_date, loading_region, scoring_region):
+    """Observed daily Tmax from ERA5, one value per day on the scoring-region grid."""
+    wanted_days = pd.date_range(start_date, end_date, freq="D")
+    daily_tmax = None
+    daily_bucket = bucket_name(GENCAST_LEVELS, loading_region) + "-daily"
+    try:
+        store = s3fs.S3Map(root=daily_bucket, s3=lumio(), check=False)
+        daily = xr.open_zarr(store, consolidated=True)
+        available_days = wanted_days.intersection(pd.DatetimeIndex(daily.time.values))
+        if "2m_temperature_daily_max" in daily and len(available_days):
+            daily_tmax = daily["2m_temperature_daily_max"].sel(time=available_days)
+            print(f"  True Tmax: daily bucket {daily_bucket}, {len(available_days)} days "
+                  f"{available_days[0].date()}..{available_days[-1].date()} "
+                  f"({len(wanted_days) - len(available_days)} requested days not stored)")
+        else:
+            print(f"  Daily bucket {daily_bucket} unusable: "
+                  f"has_daily_max={'2m_temperature_daily_max' in daily}, "
+                  f"overlap={len(available_days)} days, variables={list(daily.data_vars)}; "
+                  f"loading hourly instead.")
+    except Exception as error:
+        print(f"  Daily bucket unavailable ({error}); loading hourly instead.")
+    if daily_tmax is None:
+        hourly = load(str(wanted_days[0].date()), str(wanted_days[-1].date()),
+                      variables=["2m_temperature"], region=loading_region, freq="1h")["2m_temperature"]
+        daily_tmax = hourly.resample(time="1D").max()
+        print("  True Tmax: hourly load → daily max")
+
+    if float(daily_tmax.lon.max()) > 180:
+        daily_tmax = daily_tmax.assign_coords(lon=(daily_tmax.lon + 180) % 360 - 180).sortby("lon")
+    daily_tmax = daily_tmax.sortby("lat")
+    lat_min, lat_max, lon_min, lon_max = scoring_region
+    return daily_tmax.sel(lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max))
+
 
 # == Bucket management =========================================================
 #
