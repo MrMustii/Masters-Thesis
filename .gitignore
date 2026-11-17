@@ -41,3 +41,8 @@ modified_Gencast/tests/
 job_scripts/lumi_tests.sh
 modified_Gencast/diffusion_movie.py
 modified_Gencast/training_test.py
+
+figs/
+test_run_of_simple_job/
+good_logs/
+.ipynb_checkpoints/
