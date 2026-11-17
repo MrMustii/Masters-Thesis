@@ -115,8 +115,7 @@ def build_predictor_eval(stats, ckpt: CheckPoint, boundary_margin_degrees=0.0, s
 
     When diffs_stddev is a dict rather than one Dataset - exp4, which has a sigma per hour of
     day - the entries are concatenated along a batch dimension in hour order, so row h of a
-    24-row batch is normalised by hour h's sigma. tests/test_eval_daily.py checks that
-    alignment holds.
+    24-row batch is normalised by hour h's sigma.
     """
     has_sst = "sea_surface_temperature" in (ckpt.task_config.input_variables + ckpt.task_config.target_variables)
     predictor = GenCast(

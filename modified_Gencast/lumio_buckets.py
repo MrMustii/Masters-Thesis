@@ -1,6 +1,6 @@
 """LUMI-O object storage: the cached ERA5 store and the derived stores read off it.
 
-Every other module gets its data through here. ERA5 is pulled from WeatherBench2 on Google
+All ERA5 access goes through here. The data is pulled from WeatherBench2 on Google
 Cloud and cached as zarr on LUMI-O, one bucket per (levels, region, tp12) combination, so a
 run reads object storage instead of refetching from the cloud every time.
 
@@ -12,9 +12,9 @@ run reads object storage instead of refetching from the cloud every time.
     load_hourly_p90_threshold  p90 per hour of day, the tail weight for hourly twCRPS
     load_true_daily_tmax       observed daily Tmax, cropped to a given scoring grid
 
-Bucket roots are written with ``mode='w-'``: zarr's ``'w'`` wipe goes through s3fs and
-removes the bucket itself, which destroyed a store once. Stats and threshold stores live at
-a prefix inside ``era5-lumi`` rather than at a bucket root, so those can use ``'w'`` safely.
+Bucket roots are created with ``mode='w-'``, never ``'w'``, because ``'w'`` truncates the
+target before writing. Stats and threshold stores sit at a prefix inside ``era5-lumi``
+rather than at a bucket root, and do use ``'w'``.
 """
 
 import s3fs
@@ -56,7 +56,7 @@ def lumio():
 
 
 def bucket_name(levels, region=None, tp12=False):
-    """Bucket name encoding the level set, region and tp12 flag; dots become 'p' to stay S3-safe."""
+    """Bucket name encoding the level set, region and tp12 flag, with dots replaced by 'p'."""
     if levels is None:
         levels = 'lall'
     elif not levels:
@@ -91,9 +91,9 @@ def missing_data(time_start, time_end, existing_times, freq='1h'):
 def download(time_start, time_end, variables, levels, region=None, freq='1h'):
     """Fetch one span straight from the cloud source, cropped to region and levels.
 
-    Precipitation only exists in the GenCast-derived dataset, so asking for it switches
-    source. Longitude is normalised to [-180, 180] and a region crossing the meridian is
-    fetched as two slices and concatenated.
+    Asking for total_precipitation_12hr switches the source to the GenCast-derived dataset;
+    everything else comes from the WeatherBench2 store. Longitude is normalised to
+    [-180, 180] and a region crossing the meridian is fetched as two slices and concatenated.
     """
     source = GENCAST_SOURCE if "total_precipitation_12hr" in variables else WB2_SOURCE
     src = xr.open_zarr(source, chunks={'time': DOWNLOAD_READ_CHUNK}, storage_options={'token': 'anon'})

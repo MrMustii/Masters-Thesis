@@ -1,9 +1,12 @@
 """Normalisation statistics, computed once per configuration and cached on LUMI-O.
 
 GenCast normalises its inputs and predicts a normalised residual, so a run needs four fields
-before it can start: mean, stddev and min to normalise the inputs, and diffs_stddev to
-normalise the residual. ``training.py`` and ``helper_fun.build_predictor_eval`` call
-``load_stats`` with a run config and pass the result to graphcast's ``InputsAndResiduals``.
+before it can start. Three are normalisers: mean and stddev for the inputs, diffs_stddev for
+the residual. The fourth, min, normalises nothing - it is the fill value NaNCleaner uses for
+sea surface temperature's missing cells.
+
+``training.py`` and the four ``eval*.py`` entry points call ``load_stats`` with a run config
+and pass the result down to graphcast's ``InputsAndResiduals``.
 
 diffs_stddev is the field that changes shape between experiments, because each one predicts
 a different residual:

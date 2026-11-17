@@ -122,8 +122,8 @@ def build_loss_fn(setup, stats):
 
     daily_stats runs swap in ``InputsAndResidualsDayZero`` instead of graphcast's
     ``InputsAndResiduals``, because exp4's residual is measured against day zero's mean
-    rather than the last input frame. NaN cleaning is only added when sea surface
-    temperature is in the variable set, since that is the only field with missing cells.
+    rather than the last input frame. NaN cleaning is added only when sea surface
+    temperature is in the variable set.
     """
     use_lead_time = setup.lead_time_encoder_config is not None
     sampler_type = setup.config["training_config"].get("sampler_type", "fixed")

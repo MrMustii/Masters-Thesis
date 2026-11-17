@@ -28,3 +28,11 @@ modified_Gencast/test.ipynb
 # documentation - the README is the only versioned markdown
 *.md
 !/README.md
+
+# LaTeX table generators - their .tex output is ignored, so these stay local
+modified_Gencast/table_builders.py
+modified_Gencast/letters_table.py
+modified_Gencast/tables_comparison_*.py
+
+# test suite - superseded, kept local
+modified_Gencast/tests/
