@@ -1,6 +1,6 @@
 """Build the p90 temperature thresholds that define a hot day. Run once per region.
 
-For each day of year, pools a +/-15 day window across 1981-2010 - 31 years x 31 days = 961
+For each day of year, pools a +/-15 day window across 1981-2010 - 30 years x 31 days = 930
 samples per grid cell - and takes the 90th percentile. One pass over the hourly data
 produces both stores, which is why the full hourly array is held rather than reduced to
 daily maxima as it is read:
