@@ -1,12 +1,42 @@
+"""Every metric the experiments score, computed per case so it can be resampled later.
+
+Takes a cached prediction and its targets and returns per-case values rather than finished
+numbers. A report calls these and writes the result to metric_cases.nc; significance.py
+later bootstraps over the case axis. Averaging here would make that impossible, which is why
+nothing is pre-aggregated and why spread and skill are returned as two components instead of
+a ratio.
+
+    to_scoring_grid               canonical layout: no batch dim, ensemble axis, -180..180
+                                  longitudes, ascending latitude, cropped to the region
+    area_weighted_crps            cos-weighted fair CRPS; given a threshold it is twCRPS
+    variogram_score               temporal variogram per 24-hour vector, short-lag weighted
+    peak_time_ccrps               circular CRPS on the hour of the daily maximum
+    spread_and_skill_cases        ensemble variance and squared error, kept separate
+    reconstruction_cases          daily range, asymmetry, hours above threshold, re-aggregation
+    heatwave_conditioned_metrics  the orchestrator all five reports call
+    fixed_lead_tmax_fields        builds exp2's (forecast, lead_day) Tmax case grid
+    reconstruction_tmax_fields    the same for exp3 and exp4's (forecast, day_idx) grid
+
+Heatwaves are defined in exactly one place, ``get_heatwaves``: three or more consecutive days
+above the daily p90. Both case-grid builders derive spells on continuous calendar time and
+then read them onto the case grid, so a spell is never truncated at a forecast window's edge,
+and both return the two observed days before each forecast - the only history the model's own
+heatwave flag is allowed to use.
+"""
+
 import numpy as np
 import pandas as pd
 import xarray as xr
-import scoringrules as sr
-from scipy import stats
 from sklearn.metrics import roc_auc_score
+import scoringrules as sr
 import scores.probability
 
 TARGET_VAR = "2m_temperature"
+# Bins for tmax_histogram, 220-325 K in 1 K steps: wide enough for any European daily Tmax.
+TMAX_HISTOGRAM_BIN_EDGES = np.arange(220.0, 325.01, 1.0)
+# Denmark, the region the heatwave calendar plot is drawn over; the extra cell is Bornholm
+DENMARK_CALENDAR_REGION = (54.5, 58.0, 8.0, 13.0)
+DENMARK_CALENDAR_EXTRA_CELLS = ((55.1, 14.9),)
 
 
 def drop_batch(data_array: xr.DataArray) -> xr.DataArray:
@@ -21,391 +51,103 @@ def cos_weights(data_array: xr.DataArray) -> xr.DataArray:
     return xr.DataArray(np.cos(np.deg2rad(data_array.lat)), coords={"lat": data_array.lat})
 
 
-def _full_day_idx(hour_values: np.ndarray) -> np.ndarray:
-    """day_idx label per hour, with partial leading/trailing blocks marked -1."""
-    day_idx_values = (hour_values - hour_values[0]) // 24
-    labels, counts = np.unique(day_idx_values, return_counts=True)
-    full = set(labels[counts == 24].tolist())
-    return np.array([d if d in full else -1 for d in day_idx_values])
 
 
-def get_heatwaves(tmax: xr.DataArray, threshold: xr.DataArray, min_days: int = 3) -> xr.DataArray:
+def get_heatwaves(tmax: xr.DataArray, threshold: xr.DataArray, min_days: int = 3, day_dim: str = "day_idx", flag_full_spell: bool = True) -> xr.DataArray:
     """Boolean mask of heatwave days per pixel.
 
-    All days in a qualifying spell (min_days or more consecutive days above
-    threshold) are flagged, including the first min_days-1 days.
+    flag_full_spell=True (default): every day of a qualifying spell (min_days or
+    more consecutive days above threshold) is flagged, including the first
+    min_days-1 days. flag_full_spell=False: only day min_days onward of a
+    qualifying spell counts; isolated hot days and the ramp-up never qualify.
     """
     exceeds = (tmax > threshold).astype(int)
-    end_of_spell = (exceeds.rolling(day_idx=min_days, center=False).sum() >= min_days)
-    return (
-        end_of_spell
-        .isel(day_idx=slice(None, None, -1))
-        .rolling(day_idx=min_days, center=False, min_periods=1).max()
-        .isel(day_idx=slice(None, None, -1))
-        .fillna(False)
-        .astype(bool)
-    )
+    if exceeds.chunks is not None:
+        exceeds = exceeds.chunk({day_dim: -1})
+    end_of_spell = (exceeds.rolling({day_dim: min_days}, center=False).sum() >= min_days).fillna(False)
+    if not flag_full_spell:
+        return end_of_spell.astype(bool)
+    return (end_of_spell.isel({day_dim: slice(None, None, -1)}).rolling({day_dim: min_days}, center=False, min_periods=1).max()
+        .isel({day_dim: slice(None, None, -1)}).fillna(False).astype(bool))
 
 
-def mean_forecast(data_array: xr.DataArray) -> xr.DataArray:
-    """Mean over forecast and ensemble (if present). Returns (hour, lat, lon)."""
-    if "ensemble" in data_array.dims:
-        data_array = data_array.mean("ensemble")
-    return data_array.mean("forecast")
 
+def relative_economic_value(event_rate, warning_rates, miss_rates, cl_ratios=None) -> np.ndarray:
+    """Value of acting on the forecast, per cost-loss ratio, against climatology.
 
-def spatial_errors(pred: xr.DataArray, target: xr.DataArray) -> dict:
-    """Spatial error maps (hour, lat, lon), averaged over forecast.
+    For each cost-loss ratio, compares the expected cost of the best available warning
+    threshold against two reference costs: always acting at the climatological rate, and a
+    perfect forecast. 1 means as good as perfect, 0 means no better than climatology.
 
-    For ensemble: errors on ensemble mean. rmse/bias curves are cos-weighted.
+    Returns one value per ratio, by default the 99 ratios from 0.01 to 0.99. Picking the best
+    threshold per ratio is what makes this a potential value rather than a realised one.
+    Negative values are clipped to 0, since a user would fall back to climatology instead.
     """
-    pred = drop_batch(pred)
-    target = drop_batch(target)
-    is_ensemble = "ensemble" in pred.dims
-    pred_mean = pred.mean("ensemble") if is_ensemble else pred
-    diff = pred_mean - target
-    w = cos_weights(pred_mean)
-    rmse_map = np.sqrt((diff ** 2).mean("forecast"))
-    bias_map = diff.mean("forecast")
-    return {
-        "rmse_map": rmse_map,
-        "bias_map": bias_map,
-        "rmse": np.sqrt((diff ** 2).weighted(w).mean(["lat", "lon"]).mean("forecast")),
-        "bias": bias_map.weighted(w).mean(["lat", "lon"]),
-    }
+    alpha_values = (np.linspace(0.01, 0.99, 99) if cl_ratios is None
+                    else np.asarray(cl_ratios, dtype=float))
+    event_rate = float(event_rate)
+    warning_rates = np.asarray(warning_rates, dtype=float)
+    miss_rates = np.asarray(miss_rates, dtype=float)
+    if warning_rates.shape != miss_rates.shape:
+        raise ValueError("warning_rates and miss_rates must have the same shape")
+    if warning_rates.ndim != 1:
+        raise ValueError("warning_rates and miss_rates must be one-dimensional")
+
+    climatology_cost = np.minimum(alpha_values, event_rate)
+    forecast_cost = alpha_values[:, None] * warning_rates[None, :] + miss_rates[None, :]
+    best_forecast_cost = forecast_cost.min(axis=1)
+    perfect_cost = alpha_values * event_rate
+    denominator = climatology_cost - perfect_cost
+    with np.errstate(divide="ignore", invalid="ignore"):
+        values = np.where(denominator > 1e-12,(climatology_cost - best_forecast_cost) / denominator, 0.0)
+    return np.maximum(values, 0.0)
 
 
-def binary_classification_metrics(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
-    """Precision, Recall, F1 as curves (day_idx,) and maps (lat, lon), plus
-    per-initialization confusion-count series (forecast,) for the block
-    bootstrap (F1 must be recomputed from resampled summed counts).
-
-    Takes boolean output of get_heatwaves(). pred_hw must be deterministic.
-    """
-    w = cos_weights(tgt_hw)
-
-    tp = (pred_hw & tgt_hw).sum("forecast")
-    fp = (pred_hw & ~tgt_hw).sum("forecast")
-    fn = (~pred_hw & tgt_hw).sum("forecast")
-
-    tp_w = tp.weighted(w).sum(["lat", "lon"])
-    fp_w = fp.weighted(w).sum(["lat", "lon"])
-    fn_w = fn.weighted(w).sum(["lat", "lon"])
-    precision_curve = (tp_w / (tp_w + fp_w)).fillna(0)
-    recall_curve = (tp_w / (tp_w + fn_w)).fillna(0)
-    f1_curve = (2 * precision_curve * recall_curve / (precision_curve + recall_curve + 1e-12))
-
-    tp_s = tp.sum("day_idx")
-    fp_s = fp.sum("day_idx")
-    fn_s = fn.sum("day_idx")
-    defined = (tp_s + fp_s + fn_s) > 0
-    precision_map = (tp_s / (tp_s + fp_s)).fillna(0).where(defined)
-    recall_map = (tp_s / (tp_s + fn_s)).fillna(0).where(defined)
-    f1_map = (2 * precision_map * recall_map / (precision_map + recall_map + 1e-12)).where(defined)
-
-    counts_series = {
-        "tp": (pred_hw & tgt_hw).astype(float).weighted(w).sum(["lat", "lon", "day_idx"]),
-        "fp": (pred_hw & ~tgt_hw).astype(float).weighted(w).sum(["lat", "lon", "day_idx"]),
-        "fn": (~pred_hw & tgt_hw).astype(float).weighted(w).sum(["lat", "lon", "day_idx"]),
-        "tn": (~pred_hw & ~tgt_hw).astype(float).weighted(w).sum(["lat", "lon", "day_idx"]),
-    }
-    return {
-        "precision": precision_curve, "recall": recall_curve, "f1": f1_curve,
-        "precision_map": precision_map, "recall_map": recall_map, "f1_map": f1_map,
-        "counts_series": counts_series,
-    }
-
-
-def rev(pred_tmax, tgt_tmax, threshold, n_alpha: int = 99) -> xr.DataArray:
-    """Relative Economic Value over C/L in [0.01, 0.99]. Needs ensemble dim; custom, unverified against scores.plotdata.rev_impl."""
-    if "ensemble" not in pred_tmax.dims:
-        raise ValueError("REV requires ensemble predictions.")
-    M = pred_tmax.sizes["ensemble"]
-    obs = (tgt_tmax > threshold).astype(float)
-    prob = (pred_tmax > threshold).astype(float).mean("ensemble")
-    w = cos_weights(tgt_tmax)
-    mu = float(obs.weighted(w).mean(["lat", "lon"]).mean())
-    warning_rates = np.zeros(M + 2)
-    miss_rates = np.zeros(M + 2)
-    for j in range(M + 2):
-        q = (j - 0.5) / M
-        forecast_yes = (prob > q)
-        warning_rates[j] = float(forecast_yes.astype(float).weighted(w).mean(["lat", "lon"]).mean())
-        miss_rates[j] = float(((~forecast_yes) & (obs > 0.5)).astype(float).weighted(w).mean(["lat", "lon"]).mean())
-    alpha_values = np.linspace(0.01, 0.99, n_alpha)
-    e_clim = np.minimum(alpha_values, mu)
-    e_forecasts = alpha_values[:, None] * warning_rates[None, :] + miss_rates[None, :]
-    e_min = e_forecasts.min(axis=1)
-    denom = e_clim - alpha_values * mu
-    rev_values = np.where(denom > 1e-12, np.maximum(0.0, (e_clim - e_min) / denom), 0.0)
-    return xr.DataArray(rev_values, dims=["cl_ratio"], coords={"cl_ratio": alpha_values})
-
-
-def power_spectra_1d(data_array: xr.DataArray) -> tuple:
-    values = np.asarray(data_array.values, dtype=float).ravel()
-    n = len(values)
-    hour_vals = data_array.hour.values
-    dt_hours = float(hour_vals[1] - hour_vals[0]) if len(hour_vals) > 1 else 1.0
-    freqs = np.fft.rfftfreq(n, d=dt_hours)
-    psd = (np.abs(np.fft.rfft(values - values.mean())) ** 2) / n
-    return 1.0 / freqs[1:], psd[1:]
-
-
-def temporal_autocorrelation(data_array: xr.DataArray, max_lag: int = 48) -> xr.DataArray:
-    spatial_dims = [d for d in ("lat", "lon") if d in data_array.dims]
-    if spatial_dims:
-        w = cos_weights(data_array)
-        data_array = data_array.weighted(w).mean(spatial_dims)
-    n = data_array.sizes["hour"]
-    max_lag = min(max_lag, n - 1)
-    non_hour = [d for d in data_array.dims if d != "hour"]
-    stk = data_array.stack(series=non_hour).transpose("series", "hour")
-    vals = stk.values.astype(float)
-    vals -= vals.mean(axis=-1, keepdims=True)
-    norm = (vals * vals).sum(axis=-1)
-    acs = np.stack([
-        (vals[:, :-lag] * vals[:, lag:]).sum(axis=-1) / (norm + 1e-12) if lag > 0
-        else norm / (norm + 1e-12)
-        for lag in range(max_lag + 1)
-    ], axis=0)
-    ac_mean = acs.mean(axis=-1)
-    return xr.DataArray(ac_mean, dims=["lag"], coords={"lag": np.arange(max_lag + 1)})
 
 
 def crps_field(pred: xr.DataArray, target: xr.DataArray) -> xr.DataArray:
-    """Per-point CRPS field (fair ensemble form), before any aggregation.
+    """Per-point CRPS field in fair ensemble form, before any aggregation.
 
-    Standalone (not inside crps) because the transformed scores need it too:
-    DTR-CRPS and HAT-CRPS score per-member TRANSFORMED ensembles (daily
-    amplitude, exceedance count) and exp1 scores an absolute-time axis with no
-    (forecast, hour) layout to aggregate over. Without an ensemble dim the
-    forecast is deterministic — the baselines — and CRPS collapses to the
-    absolute error, still the same proper score, so climatology/persistence/
-    interpolated-truth get a comparable crps_series instead of no CRPS at all.
+    Falls back to absolute error when there is no ensemble dimension, which is what makes
+    the deterministic baselines scoreable on the same path as the models.
     """
     pred = drop_batch(pred)
     target = drop_batch(target)
     if "ensemble" not in pred.dims:
         return abs(pred - target)
-    # Ferro-2014 fair CRPS; preserve_dims="all" keeps every non-ensemble dim, so this
-    # returns the per-gridpoint field.
-    return scores.probability.crps_for_ensemble(
-        pred, target, ensemble_member_dim="ensemble", method="fair", preserve_dims="all")
+    return scores.probability.crps_for_ensemble(pred, target, ensemble_member_dim="ensemble", method="fair", preserve_dims="all")
 
 
-def crps(pred: xr.DataArray, target: xr.DataArray, threshold: xr.DataArray = None) -> dict:
-    """CRPS aggregates over (forecast, hour, lat, lon) fields.
-
-    With `threshold` this is the threshold-weighted CRPS via the chaining
-    function v(x) = max(x, threshold): members and observation are clipped at
-    the cell's day-of-year p90 before scoring, which keeps the score strictly
-    proper while weighting exactly the upper tail heatwaves live in (Allen et
-    al. 2025). Plain CRPS integrates the Brier score over ALL thresholds and
-    dilutes that tail.
-    """
-    if threshold is not None:
-        pred = np.maximum(pred, threshold)
-        target = np.maximum(target, threshold)
-    field = crps_field(pred, target)
-    crps_map = field.mean("forecast")
-    w = cos_weights(target)
-    crps_growth = field.weighted(w).mean(["lat", "lon"]).mean("forecast")
-    crps_series = field.weighted(w).mean(["lat", "lon"]).mean("hour")
-    day1_hours = field.hour.values < (field.hour.values.min() + 24)
-    crps_day1_series = field.isel(hour=day1_hours).weighted(w).mean(["lat", "lon", "hour"])
-    return {"crps_map": crps_map, "crps": crps_growth, "crps_series": crps_series,
-            "crps_day1_series": crps_day1_series}
+def day_blocks_reshaped(da: xr.DataArray) -> xr.DataArray:
+    """Keep only whole 24-h day blocks and split the hour axis into real (day_idx, hour_of_day) dims."""
+    assert "forecast" not in da["hour"].dims, ("hour must not depend on forecast; day-blocking assumes one shared lead-relative hour axis.")
+    hour_values = da.hour.values
+    # "full day" means 24 samples, so anything other than 1h spacing would be silently wrong
+    assert len(hour_values) < 2 or np.all(np.diff(hour_values) == 1), (f"day-blocking needs 1h-spaced hours, got spacing {np.unique(np.diff(hour_values))}")
+    day_idx_values = (hour_values - hour_values[0]) // 24
+    labels, counts = np.unique(day_idx_values, return_counts=True)
+    full = set(labels[counts == 24].tolist())
+    da = da.assign_coords(day_idx=("hour", np.array([d if d in full else -1 for d in day_idx_values])))
+    da = da.where(da.day_idx >= 0, drop=True)
+    hour_of_day = ((da.hour.values - da.hour.values[0]) % 24).astype(int)
+    return da.assign_coords(hour_of_day=("hour", hour_of_day)).set_index(hour=["day_idx", "hour_of_day"]).unstack("hour")
 
 
-def spread_skill_ratio(pred: xr.DataArray, target: xr.DataArray) -> dict:
-    if "ensemble" not in pred.dims:
-        raise ValueError("Spread-skill ratio requires ensemble predictions.")
+
+
+
+
+def variogram_score(pred: xr.DataArray, target: xr.DataArray, order: float = 0.5, forecast_batch_size: int = 4) -> dict:
+    """ Per-day temporal variogram score on each within-day 24-hour vector.
+
+    The 1/|i-j| weights concentrate on short lags, so this measures local temporal coherence:
+    whether consecutive reconstructed hours follow each other plausibly. Diurnal amplitude and
+    peak timing are scored separately, by reconstruction_cases and peak_time_ccrps. """
     pred = drop_batch(pred)
     target = drop_batch(target)
-    M = pred.sizes["ensemble"]
-    w = cos_weights(pred)
-    spread_growth = np.sqrt(
-        pred.var("ensemble").weighted(w).mean(["lat", "lon"]).mean("forecast")
-    ) * np.sqrt((M + 1) / (M - 1))
-    skill_growth = np.sqrt(
-        ((pred.mean("ensemble") - target) ** 2).weighted(w).mean(["lat", "lon"]).mean("forecast")
-    )
-    ratio = spread_growth / (skill_growth + 1e-12)
-    return {"spread": spread_growth, "skill": skill_growth, "ratio": ratio}
-
-
-def rank_histogram(pred: xr.DataArray, target: xr.DataArray) -> np.ndarray:
-    """Pooled, area-weighted Talagrand rank histogram via scores.probability.rank_histogram."""
-    if "ensemble" not in pred.dims:
-        raise ValueError("Rank histogram requires ensemble predictions.")
-    pred = drop_batch(pred)
-    target = drop_batch(target)
-    w = cos_weights(pred)
-    histogram = scores.probability.rank_histogram(pred, target, "ensemble", reduce_dims="all", weights=w)
-    return histogram.values
-
-
-def ensemble_power_spectra_1d(pred: xr.DataArray) -> tuple:
-    """Ensemble-only sibling of power_spectra_1d, which targets/baselines still need."""
-    if "ensemble" not in pred.dims:
-        raise ValueError("Ensemble power spectra requires ensemble dim.")
-    spatial_dims = [d for d in ("lat", "lon") if d in pred.dims]
-    if spatial_dims:
-        w = cos_weights(pred)
-        pred = pred.weighted(w).mean(spatial_dims)
-    pred = drop_batch(pred)
-    n = pred.sizes["hour"]
-    hour_vals = pred.hour.values
-    dt_hours = float(hour_vals[1] - hour_vals[0]) if len(hour_vals) > 1 else 1.0
-    freqs = np.fft.rfftfreq(n, d=dt_hours)
-    vals = pred.transpose("ensemble", "forecast", "hour").values.astype(float)
-    vals -= vals.mean(axis=-1, keepdims=True)
-    psds = (np.abs(np.fft.rfft(vals, axis=-1)) ** 2) / n
-    psds = psds.mean(axis=1)
-    return 1.0 / freqs[1:], psds[:, 1:].mean(axis=0), psds[:, 1:].std(axis=0)
-
-
-def spell_length_distribution(hw_mask: xr.DataArray) -> dict:
-    """Spell lengths pooled over (forecast x lat x lon). Report KS statistic only;
-    pooled pixels are spatially correlated so the p-value is optimistic."""
-    non_day_dims = [d for d in hw_mask.dims if d != "day_idx"]
-    if non_day_dims:
-        arr = hw_mask.stack(pixel=non_day_dims).transpose("pixel", "day_idx").values.astype(np.int8)
-    else:
-        arr = hw_mask.values[np.newaxis, :].astype(np.int8)
-    N, D = arr.shape
-    padded = np.concatenate([np.zeros((N, 1), np.int8), arr, np.zeros((N, 1), np.int8)], axis=1)
-    changes = np.diff(padded.astype(np.int16), axis=1)
-    _, rise_day = np.where(changes == 1)
-    _, fall_day = np.where(changes == -1)
-    lengths = fall_day - rise_day
-    if len(lengths) == 0:
-        return {"mean_length": 0.0, "max_length": 0, "lengths": lengths}
-    return {"mean_length": float(lengths.mean()), "max_length": int(lengths.max()), "lengths": lengths}
-
-
-def heatwave_ks_statistic(pred_lengths: np.ndarray, tgt_lengths: np.ndarray) -> float:
-    if len(pred_lengths) == 0 or len(tgt_lengths) == 0:
-        return 0.0
-    return float(stats.ks_2samp(pred_lengths, tgt_lengths).statistic)
-
-
-def mean_temporal_difference(pred: xr.DataArray, target: xr.DataArray) -> dict:
-    pred = drop_batch(pred)
-    target = drop_batch(target)
-    w = cos_weights(pred)
-    if "ensemble" in pred.dims:
-        pred_abs_diff = abs(pred.diff("hour")).mean("ensemble")
-    else:
-        pred_abs_diff = abs(pred.diff("hour"))
-    tgt_abs_diff = abs(target.diff("hour"))
-    pred_curve = pred_abs_diff.weighted(w).mean(["lat", "lon"]).mean("forecast")
-    tgt_curve = tgt_abs_diff.weighted(w).mean(["lat", "lon"]).mean("forecast")
-    return {"pred": pred_curve, "target": tgt_curve}
-
-
-def _day_blocked(da: xr.DataArray) -> xr.DataArray:
-    """Assign day_idx and keep only full 24-h day blocks; shared by every day-block metric."""
-    assert "forecast" not in da["hour"].dims, (
-        "hour must not depend on forecast; day-blocking assumes one shared lead-relative hour axis.")
-    hv = da.hour.values
-    labels = _full_day_idx(hv)
-    da = da.assign_coords(day_idx=("hour", labels))
-    return da.where(da.day_idx >= 0, drop=True)
-
-
-def tmax_grid(dataset: xr.Dataset) -> xr.DataArray:
-    """Daily max of 2m_temperature over FULL 24-h day blocks only."""
-    return _day_blocked(drop_batch(dataset[TARGET_VAR])).groupby("day_idx").max()
-
-
-def diurnal_shape_errors(pred: xr.DataArray, target: xr.DataArray, min_dtr: float = 1.0) -> dict:
-    """DTR (daily max-min) and asymmetry ((mean-min)/(max-min)) shape, MAE diagnostic
-    + proper CRPS score each, plus every raw per-day value, from one day-block pass."""
-    pred = drop_batch(pred)
-    target = drop_batch(target)
-    pred_day_blocked = _day_blocked(pred)
-    target_day_blocked = _day_blocked(target)
-    pred_day_groups = pred_day_blocked.groupby("day_idx")
-    target_day_groups = target_day_blocked.groupby("day_idx")
-    pred_max, pred_min, pred_mean = pred_day_groups.max(), pred_day_groups.min(), pred_day_groups.mean()
-    tgt_max, tgt_min, tgt_mean = target_day_groups.max(), target_day_groups.min(), target_day_groups.mean()
-    pred_dtr = pred_max - pred_min
-    tgt_dtr = tgt_max - tgt_min
-    pred_asymmetry = ((pred_mean - pred_min) / pred_dtr).where(tgt_dtr >= min_dtr)
-    tgt_asymmetry = ((tgt_mean - tgt_min) / tgt_dtr).where(tgt_dtr >= min_dtr)
-    w = cos_weights(target)
-
-    abs_dtr_diff = abs(pred_dtr - tgt_dtr)
-    if "ensemble" in abs_dtr_diff.dims:
-        abs_dtr_diff = abs_dtr_diff.mean("ensemble")
-    dtr_curve = abs_dtr_diff.weighted(w).mean(["lat", "lon"]).mean("forecast")
-
-    asymmetry_diff = pred_asymmetry - tgt_asymmetry
-    if "ensemble" in asymmetry_diff.dims:
-        asymmetry_diff = asymmetry_diff.mean("ensemble")
-    asymmetry_curve = asymmetry_diff.weighted(w).mean(["lat", "lon"]).mean("forecast")
-
-    dtr_crps_field = crps_field(pred_dtr, tgt_dtr)
-    dtr_crps_map = dtr_crps_field.mean(["forecast", "day_idx"])
-    dtr_crps_series_by_day = dtr_crps_field.weighted(w).mean(["lat", "lon"])
-    dtr_crps_series = dtr_crps_series_by_day.mean("day_idx")
-
-    asymmetry_crps_field = crps_field(pred_asymmetry, tgt_asymmetry)
-    asymmetry_crps_map = asymmetry_crps_field.mean(["forecast", "day_idx"])
-    asymmetry_crps_series_by_day = asymmetry_crps_field.weighted(w).mean(["lat", "lon"])
-    asymmetry_crps_series = asymmetry_crps_series_by_day.mean("day_idx")
-
-    return {
-        "pred_max": pred_max, "pred_min": pred_min, "pred_mean": pred_mean,
-        "tgt_max": tgt_max, "tgt_min": tgt_min, "tgt_mean": tgt_mean,
-        "pred_dtr": pred_dtr, "tgt_dtr": tgt_dtr,
-        "pred_asymmetry": pred_asymmetry, "tgt_asymmetry": tgt_asymmetry,
-        "dtr_curve": dtr_curve, "dtr_scalar": float(dtr_curve.mean()),
-        "dtr_crps_map": dtr_crps_map, "dtr_crps_series": dtr_crps_series,
-        "dtr_crps_series_by_day": dtr_crps_series_by_day,
-        "dtr_crps_scalar": float(dtr_crps_map.weighted(w).mean(["lat", "lon"])),
-        "asymmetry_curve": asymmetry_curve,
-        "asymmetry_map": asymmetry_diff.mean("forecast").mean("day_idx"),
-        "asymmetry_scalar": float(abs(asymmetry_diff).weighted(w).mean(["lat", "lon"]).mean()),
-        "asymmetry_crps_map": asymmetry_crps_map, "asymmetry_crps_series": asymmetry_crps_series,
-        "asymmetry_crps_series_by_day": asymmetry_crps_series_by_day,
-        "asymmetry_crps_scalar": float(asymmetry_crps_map.weighted(w).mean(["lat", "lon"])),
-    }
-
-
-def rmse_by_window_position(pred, target, ar_window_hours: int) -> xr.DataArray:
-    pred = drop_batch(pred)
-    target = drop_batch(target)
-    pred_mean = pred.mean("ensemble") if "ensemble" in pred.dims else pred
-    diff = pred_mean - target
-    w = cos_weights(pred_mean)
-    rmse_per_hour = np.sqrt((diff ** 2).weighted(w).mean(["lat", "lon"]).mean("forecast"))
-    total_hours = rmse_per_hour.sizes["hour"]
-    positions = np.arange(total_hours) % ar_window_hours
-    position_rmse = np.zeros(ar_window_hours)
-    counts = np.zeros(ar_window_hours)
-    for hour_idx in range(total_hours):
-        pos = positions[hour_idx]
-        position_rmse[pos] += float(rmse_per_hour.isel(hour=hour_idx).values)
-        counts[pos] += 1
-    counts = np.where(counts == 0, 1, counts)
-    return xr.DataArray(position_rmse / counts, dims=["window_pos"],
-                        coords={"window_pos": np.arange(ar_window_hours)})
-
-
-def variogram_score(pred: xr.DataArray, target: xr.DataArray, order: float = 0.5) -> dict:
-    """Per-day temporal variogram score via scoringrules.vs_ensemble on the within-day 24h vector, w_ij = 1/|hour separation| normalised to sum 1."""
-    pred = drop_batch(pred)
-    target = drop_batch(target)
-    pred_blocked = _day_blocked(pred)
-    tgt_blocked = _day_blocked(target)
+    pred_blocked = day_blocks_reshaped(pred)
+    tgt_blocked = day_blocks_reshaped(target)
     has_ensemble = "ensemble" in pred_blocked.dims
-
-    # reshape the hour axis into (day_idx, hour_of_day) so day_idx is a real dim and VS runs per day
-    hour_of_day = ((tgt_blocked.hour.values - tgt_blocked.hour.values[0]) % 24).astype(int)
-    pred_blocked = pred_blocked.assign_coords(hour_of_day=("hour", hour_of_day)).set_index(hour=["day_idx", "hour_of_day"]).unstack("hour")
-    tgt_blocked = tgt_blocked.assign_coords(hour_of_day=("hour", hour_of_day)).set_index(hour=["day_idx", "hour_of_day"]).unstack("hour")
 
     # within-day pairwise weight matrix (24 x 24)
     hours = tgt_blocked.hour_of_day.values
@@ -414,103 +156,50 @@ def variogram_score(pred: xr.DataArray, target: xr.DataArray, order: float = 0.5
     pair_weight = pair_weight / pair_weight.sum()
 
     batch_dims = [d for d in ("forecast", "day_idx", "lat", "lon") if d in tgt_blocked.dims]
-    tgt_values = tgt_blocked.transpose(*batch_dims, "hour_of_day").values
-    if has_ensemble:
-        pred_values = pred_blocked.transpose(*batch_dims, "ensemble", "hour_of_day").values
-    else:
-        pred_values = pred_blocked.transpose(*batch_dims, "hour_of_day").values[..., np.newaxis, :]
-    score_values = sr.vs_ensemble(tgt_values, pred_values, w=pair_weight, p=order)
-    field = xr.DataArray(score_values, dims=batch_dims,
-                         coords={d: tgt_blocked[d] for d in batch_dims})
+    target_order = [*batch_dims, "hour_of_day"]
+    prediction_order = ([*batch_dims, "ensemble", "hour_of_day"] if has_ensemble else [*batch_dims, "hour_of_day"])
+    if forecast_batch_size < 1:
+        raise ValueError("forecast_batch_size must be at least 1")
+    score_batches = []
+    for start in range(0, tgt_blocked.sizes["forecast"], forecast_batch_size):
+        stop = min(start + forecast_batch_size, tgt_blocked.sizes["forecast"])
+        target_values = np.asarray(tgt_blocked.isel(forecast=slice(start, stop)).transpose(*target_order).values, dtype=np.float32)
+        prediction_values = np.asarray(pred_blocked.isel(forecast=slice(start, stop)).transpose(*prediction_order).values, dtype=np.float32)
+        if not has_ensemble:
+            prediction_values = prediction_values[..., np.newaxis, :]
+        score_batches.append(sr.vs_ensemble(target_values, prediction_values, w=pair_weight, p=order))
+    score_values = np.concatenate(score_batches, axis=0)
+    field = xr.DataArray(score_values, dims=batch_dims, coords={d: tgt_blocked[d] for d in batch_dims})
     w = cos_weights(target)
     score_map = field.mean(["forecast", "day_idx"])
     series_by_day_idx = field.weighted(w).mean(["lat", "lon"])
     series = series_by_day_idx.mean("day_idx")
-    return {"map": score_map, "series": series, "series_by_day_idx": series_by_day_idx,
-            "scalar": float(score_map.weighted(w).mean(["lat", "lon"]))}
+    return {"map": score_map, "series": series, "series_by_day_idx": series_by_day_idx, "scalar": float(score_map.weighted(w).mean(["lat", "lon"]))}
 
-
-def spatial_variogram_score(pred: xr.DataArray, target: xr.DataArray, order: float = 0.5,
-                            max_distance_deg: float = 5.0, normalize: bool = True) -> dict:
-    """Spatial variogram score of order p over grid-cell pairs, one value per
-    (forecast, hour). Scores the SPATIAL dependence structure — a field that is
-    too smooth (over-regularised, the failure a reduced variable set risks)
-    fails this even when it passes CRPS. That is why the variable-selection test
-    requires passing on both twCRPS and this.
-
-    Computed the efficient variogram way — loop over spatial lag vectors
-    (delta_lat, delta_lon) within `max_distance_deg`, shifting the field rather
-    than enumerating all O(cells^2) pairs. Weight 1 / great-circle-ish degree
-    distance, normalised to sum 1 (mandatory for cross-domain comparison).
-    Returns a per-forecast series (area over hour+lag) for the block bootstrap.
-    """
-    pred = drop_batch(pred)
-    target = drop_batch(target)
-    pred_mean = pred.mean("ensemble") if "ensemble" in pred.dims else pred
-    pred_mean = pred_mean.transpose("forecast", "hour", "lat", "lon")
-    target = target.transpose("forecast", "hour", "lat", "lon")
-    latitudes = target.lat.values
-    longitudes = target.lon.values
-    lat_step = float(np.abs(latitudes[1] - latitudes[0])) if len(latitudes) > 1 else 0.25
-    lon_step = float(np.abs(longitudes[1] - longitudes[0])) if len(longitudes) > 1 else 0.25
-    max_lat_shift = int(round(max_distance_deg / lat_step))
-    max_lon_shift = int(round(max_distance_deg / lon_step))
-
-    pred_values = pred_mean.values
-    tgt_values = target.values
-    num_lat, num_lon = tgt_values.shape[-2], tgt_values.shape[-1]
-    accumulated = np.zeros(pred_values.shape[:2])  # (forecast, hour)
-    weight_total = 0.0
-    for lat_shift in range(-max_lat_shift, max_lat_shift + 1):
-        for lon_shift in range(0, max_lon_shift + 1):
-            if lon_shift == 0 and lat_shift <= 0:
-                continue  # skip (0,0) and the mirror of the +lat / same-lon pairs
-            if abs(lat_shift) >= num_lat or lon_shift >= num_lon:
-                continue  # no overlapping cells at this lag (grid smaller than the shift)
-            distance = np.hypot(lat_shift * lat_step, lon_shift * lon_step)
-            if distance > max_distance_deg:
-                continue
-            pair_weight = 1.0 / distance
-            weight_total += pair_weight
-            # Overlapping cell (i, j) vs (i+lat_shift, j+lon_shift), valid indices only.
-            here_lat = slice(max(0, -lat_shift), num_lat - max(0, lat_shift))
-            shift_lat = slice(max(0, lat_shift), num_lat - max(0, -lat_shift))
-            here_lon, shift_lon = slice(0, num_lon - lon_shift), slice(lon_shift, num_lon)
-            tgt_term = np.abs(tgt_values[..., here_lat, here_lon]
-                              - tgt_values[..., shift_lat, shift_lon]) ** order
-            pred_term = np.abs(pred_values[..., here_lat, here_lon]
-                               - pred_values[..., shift_lat, shift_lon]) ** order
-            accumulated += pair_weight * ((tgt_term - pred_term) ** 2).mean(axis=(-2, -1))
-    if normalize and weight_total > 0:
-        accumulated /= weight_total
-    field = xr.DataArray(accumulated, dims=["forecast", "hour"],
-                         coords={"forecast": target.forecast, "hour": target.hour})
-    series = field.mean("hour")
-    return {"series": series, "scalar": float(series.mean())}
 
 
 def peak_time_ccrps(pred: xr.DataArray, target: xr.DataArray) -> dict:
-    """Peak-time error as a PROPER, rankable score: the argmax-hour transform
-    per member, then a CIRCULAR fair CRPS with the angular distance
-    alpha(a, b) = min(|a-b|, 24-|a-b|) as the (negative-definite) kernel.
+    """Error in the hour of the daily maximum, as a proper and therefore rankable score.
 
-    cCRPS = mean_k alpha(theta_k, obs) - 1/(2M(M-1)) sum_{k!=l} alpha(theta_k, theta_l),
-    bounded by 12 h, proper because angular distance is a negative-definite
-    kernel (Gneiting 1998). Replaces the old argmax-of-the-ensemble-mean MAE,
-    which could not rank a probabilistic peak. Deterministic input scores the
-    single trajectory's angular distance to the observed peak."""
+    Takes each member's argmax hour, then scores those against the observed hour with a fair
+    CRPS built on the angular distance min(|a-b|, 24-|a-b|). That kernel is negative
+    definite, which is what keeps the score proper, and circular, so hour 23 and hour 0 are
+    one apart rather than 23.
+    """
+
     pred = drop_batch(pred)
     target = drop_batch(target)
-    pred_peak = _day_blocked(pred).groupby("day_idx").map(
-        lambda block: block.hour.isel(hour=block.argmax("hour")).drop_vars(["hour", "day_idx"], errors="ignore"))
-    tgt_peak = _day_blocked(target).groupby("day_idx").map(
-        lambda block: block.hour.isel(hour=block.argmax("hour")).drop_vars(["hour", "day_idx"], errors="ignore"))
+    pred_day_blocked = day_blocks_reshaped(pred)
+    tgt_day_blocked = day_blocks_reshaped(target)
+
+    pred_peak = pred_day_blocked.hour_of_day.isel(hour_of_day=pred_day_blocked.argmax("hour_of_day").compute())
+    tgt_peak = tgt_day_blocked.hour_of_day.isel(hour_of_day=tgt_day_blocked.argmax("hour_of_day").compute())
     tgt_peak_hour = (tgt_peak % 24)
+    
     if "ensemble" in pred_peak.dims:
         pred_hours = (pred_peak % 24).transpose("ensemble", ...)
         member_axis = 0
-        angular_to_truth = np.minimum(np.abs(pred_hours - tgt_peak_hour),
-                                      24 - np.abs(pred_hours - tgt_peak_hour))
+        angular_to_truth = np.minimum(np.abs(pred_hours - tgt_peak_hour), 24 - np.abs(pred_hours - tgt_peak_hour))
         term_truth = angular_to_truth.mean("ensemble")
         member_values = pred_hours.values
         num_members = member_values.shape[member_axis]
@@ -521,211 +210,489 @@ def peak_time_ccrps(pred: xr.DataArray, target: xr.DataArray) -> dict:
                     continue
                 difference = np.abs(member_values[first_member] - member_values[second_member])
                 pairwise += np.minimum(difference, 24 - difference)
-        spread = xr.DataArray(pairwise / (num_members * (num_members - 1)),
-                              dims=term_truth.dims, coords=term_truth.coords)
+        spread = xr.DataArray(pairwise / (num_members * (num_members - 1)), dims=term_truth.dims, coords=term_truth.coords)
         field = term_truth - 0.5 * spread
     else:
         pred_hour = pred_peak % 24
         field = np.minimum(np.abs(pred_hour - tgt_peak_hour), 24 - np.abs(pred_hour - tgt_peak_hour))
     w = cos_weights(target)
     score_map = field.mean(["forecast", "day_idx"])
-    series = field.weighted(w).mean(["lat", "lon", "day_idx"])
-    return {"map": score_map, "series": series, "scalar": float(score_map.weighted(w).mean(["lat", "lon"]))}
+    series_by_day_idx = field.weighted(w).mean(["lat", "lon"])
+    series = series_by_day_idx.mean("day_idx")
+    return { "map": score_map, "series_by_day_idx": series_by_day_idx, "series": series, "scalar": float(score_map.weighted(w).mean(["lat", "lon"]))}
 
 
-def event_bias(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
-    """Metrics 16-17: event frequency bias N_pred/N_obs over cells with
-    N_obs >= 1 (above 1 too many events, catches fragmentation) and event
-    duration bias, mean event length difference in days (negative truncates
-    or fragments). Events are maximal flagged runs; the >= 3-day sieve is
-    already applied by get_heatwaves."""
-    w = cos_weights(tgt_hw)
-    padded_pred = pred_hw.astype(np.int8).pad(day_idx=(1, 0), constant_values=0)
-    padded_tgt = tgt_hw.astype(np.int8).pad(day_idx=(1, 0), constant_values=0)
-    pred_events = (padded_pred.diff("day_idx") == 1).sum(["day_idx", "forecast"])
-    tgt_events = (padded_tgt.diff("day_idx") == 1).sum(["day_idx", "forecast"])
-    frequency_bias_map = (pred_events / tgt_events).where(tgt_events >= 1)
-    pred_mean_length = (pred_hw.sum(["day_idx", "forecast"]) / pred_events).where(pred_events >= 1)
-    tgt_mean_length = (tgt_hw.sum(["day_idx", "forecast"]) / tgt_events).where(tgt_events >= 1)
-    duration_bias_map = pred_mean_length - tgt_mean_length
-    return {
-        "frequency_bias_map": frequency_bias_map,
-        "frequency_bias": float(frequency_bias_map.weighted(w).mean(["lat", "lon"])),
-        "duration_bias_map": duration_bias_map,
-        "duration_bias": float(duration_bias_map.weighted(w).mean(["lat", "lon"])),
-    }
 
 
-def event_detection_rate(pred_hw: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
-    """Fraction of true sieved-heatwave EVENTS the model flags on at least one day, per cell and pooled."""
-    non_day_dims = [d for d in tgt_hw.dims if d != "day_idx"]
-    stacked_tgt = tgt_hw.stack(pixel=non_day_dims).transpose("pixel", "day_idx")
-    pixel_tgt = stacked_tgt.values.astype(np.int8)
-    pixel_pred = pred_hw.stack(pixel=non_day_dims).transpose("pixel", "day_idx").values.astype(np.int8)
-    num_pixels = pixel_tgt.shape[0]
-    padded = np.concatenate([np.zeros((num_pixels, 1), np.int8), pixel_tgt, np.zeros((num_pixels, 1), np.int8)], axis=1)
-    changes = np.diff(padded.astype(np.int16), axis=1)
-    rise_pixel, rise_day = np.where(changes == 1)
-    _, fall_day = np.where(changes == -1)
-    hits = np.array([bool(pixel_pred[pixel, start:end].any())
-                     for pixel, start, end in zip(rise_pixel, rise_day, fall_day)])
-    events_per_pixel = np.bincount(rise_pixel, minlength=num_pixels).astype(float)
-    hits_per_pixel = np.bincount(rise_pixel, weights=hits, minlength=num_pixels)
-    rate_per_pixel = np.divide(hits_per_pixel, events_per_pixel,
-                               out=np.full(num_pixels, np.nan), where=events_per_pixel > 0)
-    rate_map = xr.DataArray(rate_per_pixel, dims=["pixel"], coords={"pixel": stacked_tgt.pixel}).unstack("pixel")
-    if "forecast" in rate_map.dims:
-        rate_map = rate_map.mean("forecast")  # per-cell rate averaged over forecasts
-    return {"map": rate_map, "rate": float(hits.mean()) if len(hits) else float("nan"), "num_events": int(len(hits))}
+def conditional_tmax_errors(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray, tgt_hw: xr.DataArray, day_dim: str | None = "day_idx") -> dict:
+    """Tmax bias and RMSE counting only the days and cells that were observed to be in a heatwave."""
 
-
-def conditional_tmax_errors(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray, tgt_hw: xr.DataArray) -> dict:
-    """Metric 18: Tmax bias and RMSE only over day-cell pairs where the
-    OBSERVED heatwave flag is true (conditioning on observation, not
-    prediction). A conditional cold bias explains recall deficits.
-    bias_series (forecast,) feeds the block bootstrap."""
     diff = (pred_tmax - tgt_tmax).where(tgt_hw)
     w = cos_weights(tgt_tmax)
-    bias = float(diff.weighted(w).mean(["lat", "lon", "day_idx", "forecast"]))
-    rmse = float(np.sqrt((diff ** 2).weighted(w).mean(["lat", "lon", "day_idx", "forecast"])))
-    bias_series = diff.weighted(w).mean(["lat", "lon", "day_idx"])
-    return {"bias": bias, "rmse": rmse, "bias_map": diff.mean(["forecast", "day_idx"]), "bias_series": bias_series}
+    pool_dims = ["lat", "lon"] + ([day_dim] if day_dim else [])
+    non_spatial_dims = [dimension for dimension in diff.dims if dimension not in ("lat", "lon")]
+    bias_series = diff.weighted(w).mean(pool_dims)
+    squared_error_series = (diff ** 2).weighted(w).mean(pool_dims)
+    rmse_series = np.sqrt(squared_error_series)
+    bias = float(bias_series.mean())
+    rmse = float(np.sqrt(squared_error_series.mean()))
+    return {"bias": bias, "rmse": rmse, "bias_map": diff.mean(non_spatial_dims),
+            "bias_series": bias_series, "rmse_series": rmse_series, "squared_error_series": squared_error_series}
 
 
-def tmax_quantile_bias(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray, quantile_levels=(0.90, 0.95, 0.99)) -> dict:
-    """Metric 19: per-cell quantiles of pooled per-member daily Tmax minus the
-    observed quantiles. Negative means the upper tail is too cold — the
-    regression-to-the-mean signature. Pools members; quantiles of the ensemble
-    mean would smooth the tail."""
-    pred_pool_dims = [d for d in ("forecast", "day_idx", "ensemble") if d in pred_tmax.dims]
-    tgt_pool_dims = [d for d in ("forecast", "day_idx") if d in tgt_tmax.dims]
-    pred_quantiles = pred_tmax.quantile(list(quantile_levels), dim=pred_pool_dims)
-    tgt_quantiles = tgt_tmax.quantile(list(quantile_levels), dim=tgt_pool_dims)
-    delta_map = pred_quantiles - tgt_quantiles
-    w = cos_weights(tgt_tmax)
-    scalars = {
-        f"q{int(round(level * 100))}": float(delta_map.sel(quantile=level).weighted(w).mean(["lat", "lon"]))
-        for level in quantile_levels
-    }
-    return {"map": delta_map, "scalars": scalars}
+def to_scoring_grid(data: xr.DataArray, region: tuple[float, float, float, float]) -> xr.DataArray:
+    """Put one cached field on the canonical scoring layout: no batch dim, ensemble member axis,
+    -180..180 longitudes, ascending latitude, cropped to the scoring region."""
+    if "batch" in data.dims:
+        if data.sizes["batch"] != 1:
+            raise ValueError(f"Expected one cached batch, got {data.sizes['batch']}")
+        data = data.squeeze("batch", drop=True)
+    if "sample" in data.dims:
+        data = data.rename({"sample": "ensemble"})
+    if float(data.lon.max()) > 180:
+        data = data.assign_coords(lon=(data.lon + 180) % 360 - 180).sortby("lon")
+    return data.sortby("lat").sel(lat=slice(region[0], region[1]), lon=slice(region[2], region[3]))
 
 
-def tail_ratio(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray,
-               low: float = 0.90, mid: float = 0.95, high: float = 0.99) -> dict:
-    """Tail THICKNESS, independent of bias: R = (Q99 - Q90)_model / (Q99 - Q90)_obs
-    per cell, from pooled daily Tmax. R < 1 = upper tail too compressed (squashed
-    extremes), R > 1 = too stretched. A uniformly cold model can still have R = 1;
-    quantile bias gives the tail's LOCATION, this gives its width. The two sub-gaps
-    (Q95-Q90, Q99-Q95) show where the compression sits."""
-    pred_pool = [d for d in ("forecast", "day_idx", "ensemble") if d in pred_tmax.dims]
-    tgt_pool = [d for d in ("forecast", "day_idx") if d in tgt_tmax.dims]
-    pred_quantiles = pred_tmax.quantile([low, mid, high], dim=pred_pool)
-    tgt_quantiles = tgt_tmax.quantile([low, mid, high], dim=tgt_pool)
-    pred_gap = pred_quantiles.sel(quantile=high) - pred_quantiles.sel(quantile=low)
-    tgt_gap = tgt_quantiles.sel(quantile=high) - tgt_quantiles.sel(quantile=low)
-    ratio_map = (pred_gap / tgt_gap).where(tgt_gap > 1e-6)
-    w = cos_weights(tgt_tmax)
-    lower_pred = pred_quantiles.sel(quantile=mid) - pred_quantiles.sel(quantile=low)
-    upper_pred = pred_quantiles.sel(quantile=high) - pred_quantiles.sel(quantile=mid)
-    lower_tgt = tgt_quantiles.sel(quantile=mid) - tgt_quantiles.sel(quantile=low)
-    upper_tgt = tgt_quantiles.sel(quantile=high) - tgt_quantiles.sel(quantile=mid)
-    return {
-        "map": ratio_map,
-        "ratio": float(ratio_map.weighted(w).mean(["lat", "lon"])),
-        "lower_gap_ratio": float((lower_pred / lower_tgt).where(lower_tgt > 1e-6).weighted(w).mean(["lat", "lon"])),
-        "upper_gap_ratio": float((upper_pred / upper_tgt).where(upper_tgt > 1e-6).weighted(w).mean(["lat", "lon"])),
-    }
+def area_weighted_crps(prediction: xr.DataArray, target: xr.DataArray, threshold: xr.DataArray | None = None) -> xr.DataArray:
+    """Fair ensemble CRPS between prediction and target, averaged over the region.
+
+    Computes the per-point CRPS, then takes a cos-latitude weighted mean over lat and lon.
+    Every non-spatial dimension survives, so the result is one CRPS value per case.
+
+    With a threshold, prediction and target are both clipped from below before scoring, which
+    makes this threshold-weighted CRPS: everything under the threshold collapses onto it, so
+    only the hot tail can separate two forecasts.
+    """
+    if threshold is not None:
+        prediction = np.maximum(prediction, threshold)
+        target = np.maximum(target, threshold)
+    weights = xr.DataArray(np.cos(np.deg2rad(target.lat)), dims=["lat"], coords={"lat": target.lat})
+    return crps_field(prediction, target).weighted(weights).mean(["lat", "lon"]).reset_coords(drop=True)
 
 
-def conditional_rank_histogram(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray,
-                               threshold: xr.DataArray) -> np.ndarray:
-    """Tail CALIBRATION: the rank of the observation among {obs, members},
-    restricted to cases where the observation exceeds tau. M+1 bins. Reading:
-    flat = extreme observations are plausible extreme members (calibrated);
-    rising toward high ranks = observations more extreme than members (tails too
-    thin); falling toward low ranks = members too extreme (tails too thick). This
-    is the diagnostic that discharges the Brehmer-Strokorb obligation — no proper
-    score can assess tail calibration. Coarse at M=8; pool over cells for counts."""
-    if "ensemble" not in pred_tmax.dims:
-        raise ValueError("Conditional rank histogram requires ensemble predictions.")
-    num_members = pred_tmax.sizes["ensemble"]
-    below = (pred_tmax < tgt_tmax).sum("ensemble")
-    tied = (pred_tmax == tgt_tmax).sum("ensemble")
-    exceeds = tgt_tmax > threshold
-    below, tied, exceeds = xr.broadcast(below, tied, exceeds)
-    rng = np.random.default_rng(42)
-    ranks = below.values + rng.integers(0, tied.values + 1)
-    tail_ranks = ranks[np.asarray(exceeds.values) & np.isfinite(ranks)]
-    if tail_ranks.size == 0:
-        return np.zeros(num_members + 1)
-    histogram = np.bincount(tail_ranks.astype(int).ravel(), minlength=num_members + 1)
-    return histogram / histogram.sum()
+def fixed_lead_hourly_threshold(prediction: xr.DataArray, hourly_p90: xr.DataArray) -> xr.DataArray:
+    """Select the p90 field at every fixed-lead forecast valid time."""
+    forecasts = pd.DatetimeIndex(prediction.forecast.values)
+    hours = np.asarray(prediction.hour.values, dtype=int)
+    valid = forecasts.values[:, None] + hours[None, :] * np.timedelta64(1, "h")
+    
+    day_of_year = xr.DataArray(np.minimum(pd.DatetimeIndex(valid.ravel()).dayofyear.values.reshape(valid.shape), 365),
+        dims=["forecast", "hour"], coords={"forecast": prediction.forecast, "hour": prediction.hour})
+
+    hour_of_day = xr.DataArray( pd.DatetimeIndex(valid.ravel()).hour.values.reshape(valid.shape),
+        dims=["forecast", "hour"], coords={"forecast": prediction.forecast, "hour": prediction.hour})
+    
+    return hourly_p90.sel(dayofyear=day_of_year, hour_of_day=hour_of_day).interp(lat=prediction.lat, lon=prediction.lon)
 
 
-def probabilistic_detection(pred_tmax: xr.DataArray, tgt_tmax: xr.DataArray, threshold: xr.DataArray,
-                            climatology_probability: xr.DataArray = None) -> dict:
-    """Probabilistic heatwave detection. p_hat = fraction of members with Tmax > tau
-    per cell-day; o = 1 if observed Tmax > tau. Brier score (p_hat - o)^2, Brier
-    skill score vs climatology (BSS = 1 - BS_model / BS_climatology; climatology's
-    p_hat is ~0.1 by construction of the p90 threshold, or the observed base rate
-    if none is given). Reliability: with M members p_hat takes M+1 discrete values,
-    used directly as the bins (no binning choice). AUC via the rank-sum identity,
-    invariant to monotone recalibration so reported alongside reliability, not
-    instead of it."""
-    if "ensemble" not in pred_tmax.dims:
-        raise ValueError("Probabilistic detection requires ensemble predictions.")
-    num_members = pred_tmax.sizes["ensemble"]
-    forecast_probability = (pred_tmax > threshold).mean("ensemble")
-    observation = (tgt_tmax > threshold).astype(float)
-    forecast_probability, observation = xr.broadcast(forecast_probability, observation)
-    w = cos_weights(tgt_tmax)
-    brier_map = ((forecast_probability - observation) ** 2).mean([d for d in ("forecast", "day_idx")
-                                                                  if d in forecast_probability.dims])
-    brier = float(((forecast_probability - observation) ** 2).weighted(w).mean(list(forecast_probability.dims)))
-    base_rate = float(observation.weighted(w).mean(list(observation.dims)))
-    reference = climatology_probability if climatology_probability is not None else base_rate
-    brier_reference = float(((reference - observation) ** 2).weighted(w).mean(list(observation.dims)))
-    brier_skill_score = 1.0 - brier / brier_reference if brier_reference > 0 else 0.0
+def fixed_lead_tmax_fields(prediction: xr.DataArray, true_daily: xr.DataArray, p90: xr.DataArray
+                            ) -> tuple[xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray]:
+    """Build exp2's (forecast, lead_day) Tmax case grid from a fixed-lead hourly forecast.
 
-    probability_values = forecast_probability.values.ravel()
-    observation_values = observation.values.ravel()
-    finite = np.isfinite(probability_values) & np.isfinite(observation_values)
-    probability_values, observation_values = probability_values[finite], observation_values[finite]
-    bin_index = np.rint(probability_values * num_members).astype(int)
-    reliability_forecast = np.arange(num_members + 1) / num_members
-    reliability_observed = np.full(num_members + 1, np.nan)
-    reliability_count = np.zeros(num_members + 1)
-    for bin_value in range(num_members + 1):
-        in_bin = bin_index == bin_value
-        reliability_count[bin_value] = in_bin.sum()
-        if in_bin.any():
-            reliability_observed[bin_value] = observation_values[in_bin].mean()
+    Takes the daily maximum of the forecast, keeping only lead days that carry both the 00
+    and 12 UTC frames, then looks up the matching truth and threshold for every cell.
 
-    # AUC via the rank-sum identity is exactly sklearn's roc_auc_score; needs both classes present.
-    has_both_classes = 0 < observation_values.sum() < observation_values.size
-    auc = float(roc_auc_score(observation_values, probability_values)) if has_both_classes else float("nan")
-    return {
-        "brier_map": brier_map, "brier": brier, "brier_skill_score": brier_skill_score,
-        "base_rate": base_rate, "auc": float(auc),
-        "reliability_forecast": reliability_forecast, "reliability_observed": reliability_observed,
-        "reliability_count": reliability_count,
-    }
+    Returns six arrays:
+        members             predicted daily Tmax, ensemble dimension retained
+        truth               observed daily Tmax on the same grid
+        threshold           p90 for each valid day
+        target_spell        observed heatwave mask, derived on continuous calendar time so a
+                            spell is not cut off where a forecast window ends
+        day_indexer         the valid date of every (forecast, lead_day) cell
+        antecedent_exceeds  whether each of the two days before the forecast was above p90,
+                            the only history the model's own heatwave flag may use
+    """
+    # takes the daily maximum of the forecast, keeping only lead days with both 00 and 12 UTC
+    lead_hours = np.asarray(prediction.hour.values, dtype=int)
+    initialisation_hours = pd.DatetimeIndex(prediction.forecast.values).hour
+    groups = []
+    for initialisation_hour in np.unique(initialisation_hours):
+        group = prediction.isel(forecast=(initialisation_hours == initialisation_hour))
+        lead_day = (int(initialisation_hour) + lead_hours) // 24
+        counts = pd.Series(lead_day).value_counts()
+        full_days = sorted(counts[counts == 2].index.tolist())
+        if not full_days:
+            raise ValueError(f"No complete Tmax lead days for initialisation hour {initialisation_hour}")
+        group = group.assign_coords(lead_day=("hour", lead_day))
+        groups.append(group.groupby("lead_day").max().sel(lead_day=full_days))
+    common_days = sorted(set.intersection(*[set(group.lead_day.values.tolist()) for group in groups]))
+    if not common_days:
+        raise ValueError("No common Tmax lead days across initialisation hours")
+    members = xr.concat([group.sel(lead_day=common_days) for group in groups], dim="forecast").sortby("forecast")
+
+    # looks up the matching truth and threshold for every forecast/lead-day cell
+    forecasts = pd.DatetimeIndex(members.forecast.values).floor("D")
+    lead_days = np.asarray(members.lead_day.values, dtype=int)
+    valid_days = forecasts.values[:, None] + lead_days[None, :] * np.timedelta64(1, "D")
+    day_indexer = xr.DataArray(valid_days, dims=["forecast", "lead_day"],coords={"forecast": members.forecast, "lead_day": members.lead_day})
+    truth = true_daily.sel(time=day_indexer).interp(lat=members.lat, lon=members.lon)
+    day_of_year = xr.DataArray( np.minimum(pd.DatetimeIndex(valid_days.ravel()).dayofyear.values.reshape(valid_days.shape), 365),
+        dims=["forecast", "lead_day"], coords={"forecast": members.forecast, "lead_day": members.lead_day})
+    threshold = p90.sel(dayofyear=day_of_year).interp(lat=members.lat, lon=members.lon)
+
+    # finds the observed heatwaves on the full calendar, then reads them onto the case grid
+    aligned_true_daily = true_daily.interp(lat=members.lat, lon=members.lon)
+    continuous_day_of_year = xr.DataArray(np.minimum(pd.DatetimeIndex(true_daily.time.values).dayofyear, 365),
+        dims=["time"], coords={"time": true_daily.time})
+    aligned_continuous_threshold = p90.sel(dayofyear=continuous_day_of_year).interp(lat=members.lat, lon=members.lon)
+    continuous_spell = get_heatwaves(aligned_true_daily, aligned_continuous_threshold, day_dim="time", flag_full_spell=True)
+    target_spell = continuous_spell.sel(time=day_indexer)
+
+    # collects the two observed days before each forecast, the only history its heatwave flag may use
+    continuous_exceeds = aligned_true_daily > aligned_continuous_threshold
+    first_valid_days = forecasts.values + int(lead_days.min()) * np.timedelta64(1, "D")
+    antecedent_days = xr.DataArray(
+        first_valid_days[:, None] + np.array([-2, -1])[None, :] * np.timedelta64(1, "D"),
+        dims=["forecast", "antecedent"],
+        coords={"forecast": members.forecast, "antecedent": [-2, -1]})
+    # reindex so forecasts at the start of the record read False instead of raising on a missing date
+    antecedent_exceeds = continuous_exceeds.reindex(
+        time=np.union1d(continuous_exceeds.time.values, np.unique(antecedent_days.values)),
+        fill_value=False).sel(time=antecedent_days).drop_vars("time")
+    return members, truth, threshold, target_spell, day_indexer, antecedent_exceeds
 
 
-def over_smoothing_diagnostic(pred: xr.DataArray, target: xr.DataArray) -> dict:
-    """Curvature check: mean |X_{h+1} - 2 X_h + X_{h-1}| (the discrete second
-    difference along hour) for model vs ERA5, by lead hour. The model curve below
-    ERA5's = the diurnal curve is too smooth — the power-variation signature of an
-    over-regularised reconstruction. Read as two raw curves, not a single score."""
-    pred = drop_batch(pred)
-    target = drop_batch(target)
-    pred_mean = pred.mean("ensemble") if "ensemble" in pred.dims else pred
-    second_pred = np.abs(pred_mean.diff("hour", n=2))
-    second_tgt = np.abs(target.diff("hour", n=2))
-    w = cos_weights(target)
-    return {
-        "pred_curve": second_pred.weighted(w).mean(["lat", "lon"]).mean("forecast"),
-        "tgt_curve": second_tgt.weighted(w).mean(["lat", "lon"]).mean("forecast"),
-    }
+def heatwave_event_primitives(prediction: xr.DataArray, target: xr.DataArray,  prediction_event: xr.DataArray, target_event: xr.DataArray) -> xr.Dataset:
+    """Per-case reliability, decision and error components for a binary event, from event masks
+    passed in so either the threshold or the sieved heatwave definition can be scored."""
+    # turns the ensemble into an event probability and the truth into a 0/1 event
+    is_ensemble = "ensemble" in prediction.dims
+    num_members = int(prediction.sizes["ensemble"]) if is_ensemble else 1
+    prediction_probability = (prediction_event.astype(float).mean("ensemble") if is_ensemble else prediction_event.astype(float))
+    target_indicator = target_event.astype(float)
+    prediction_probability, target_indicator = xr.broadcast(prediction_probability, target_indicator)
+    spatial_dims = [dimension for dimension in ("lat", "lon") if dimension in prediction_probability.dims]
+    case_dims = [dimension for dimension in prediction_probability.dims if dimension not in spatial_dims]
+    is_finite = np.isfinite(prediction_probability) & np.isfinite(target_indicator)
+    target_is_event = target_indicator > 0.5
+    weights = cos_weights(target)
+
+    # counts cells per forecast-probability bin, and how many were events, for the reliability diagram
+    probability_bin = np.rint(prediction_probability * num_members).astype(np.int16)
+    probability_bin_values = np.arange(num_members + 1, dtype=np.int16)
+    probability_bin_count = xr.concat(
+        [((probability_bin == value) & is_finite).sum(spatial_dims).astype(np.int32) for value in probability_bin_values],
+        dim=xr.IndexVariable("probability_bin", probability_bin_values),
+    ).transpose(*case_dims, "probability_bin")
+    probability_bin_event_count = xr.concat(
+        [((probability_bin == value) & target_is_event & is_finite).sum(spatial_dims).astype(np.int32) for value in probability_bin_values],
+        dim=xr.IndexVariable("probability_bin", probability_bin_values),
+    ).transpose(*case_dims, "probability_bin")
+
+    # Brier score, how often the event happened, and the Tmax error over observed-event cells only
+    valid_prediction_probability = prediction_probability.where(is_finite)
+    valid_target_indicator = target_indicator.where(is_finite)
+    brier_score = ((valid_prediction_probability - valid_target_indicator) ** 2).weighted(weights).mean(spatial_dims)
+    event_rate = valid_target_indicator.weighted(weights).mean(spatial_dims)
+    point_prediction = prediction.mean("ensemble") if is_ensemble else prediction
+    conditional_mask = target_is_event & is_finite
+    conditional_error_sum = abs(point_prediction - target).where(conditional_mask).weighted(weights).sum(spatial_dims)
+    conditional_support = conditional_mask.astype(float).weighted(weights).sum(spatial_dims)
+
+    # sweeps every warning threshold a member vote can produce and records the confusion shares at each;
+    # only three are stored because TNR = 1 - TPR - FPR - FNR
+    decision_index = np.arange(num_members + 2, dtype=np.int16)
+    decision_threshold = (decision_index.astype(float) - 0.5) / num_members
+    components = {name: [] for name in (
+        "true_positive_share", "false_positive_share", "false_negative_share",
+    )}
+    for threshold_value in decision_threshold:
+        warning = (prediction_probability > threshold_value) & is_finite
+        component_masks = {
+            "true_positive_share": warning & target_is_event,
+            "false_positive_share": warning & ~target_is_event,
+            "false_negative_share": ~warning & target_is_event,
+        }
+        for name, mask in component_masks.items():
+            components[name].append(mask.astype(float).where(is_finite).weighted(weights).mean(spatial_dims))
+
+    dataset = xr.Dataset({
+        "probability_bin_count": probability_bin_count,
+        "probability_bin_event_count": probability_bin_event_count,
+        "brier_score": brier_score.astype(np.float32),
+        "event_rate": event_rate.astype(np.float32),
+        "conditional_abs_error_sum": conditional_error_sum.astype(np.float32),
+        "conditional_error_support": conditional_support.astype(np.float32),
+        **{name: xr.concat(values, dim=xr.IndexVariable("decision", decision_index)).transpose(*case_dims, "decision").astype(np.float32)
+           for name, values in components.items()},
+    })
+
+    # AUC per case, left as NaN when a case is all events or all non-events
+    if is_ensemble:
+        stacked_prediction_probability = prediction_probability.stack(_case=case_dims, _cell=spatial_dims).transpose("_case", "_cell")
+        stacked_target_indicator = target_indicator.stack(_case=case_dims, _cell=spatial_dims).transpose("_case", "_cell")
+        auc = np.full(stacked_prediction_probability.sizes["_case"], np.nan, dtype=np.float32)
+        for index, (prediction_probability_values, target_indicator_values) in enumerate(
+                zip(stacked_prediction_probability.values, stacked_target_indicator.values, strict=True)):
+            valid_cells = np.isfinite(prediction_probability_values) & np.isfinite(target_indicator_values)
+            observed_values = target_indicator_values[valid_cells]
+            if observed_values.size and 0 < observed_values.sum() < observed_values.size:
+                auc[index] = roc_auc_score(observed_values, prediction_probability_values[valid_cells])
+        dataset["auc_case"] = xr.DataArray(auc, dims=["_case"], coords={"_case": stacked_prediction_probability._case}).unstack("_case").transpose(*case_dims)
+    else:
+        dataset["auc_case"] = xr.full_like(event_rate, np.nan, dtype=np.float32)
+    dataset = dataset.assign_coords(
+        forecast_probability=("probability_bin", probability_bin_values.astype(float) / num_members),
+        decision_probability_threshold=("decision", decision_threshold),
+    )
+    return dataset
 
 
+def tmax_histogram(prediction: xr.DataArray, target: xr.DataArray, bin_edges: np.ndarray = TMAX_HISTOGRAM_BIN_EDGES) -> xr.Dataset:
+    """Daily-Tmax histogram of model against ERA5 on shared bins, over every day in the run."""
+    point_prediction = prediction.mean("ensemble") if "ensemble" in prediction.dims else prediction
+    prediction_values = np.asarray(point_prediction.values, dtype=float).ravel()
+    target_values = np.asarray(target.values, dtype=float).ravel()
+    prediction_counts, _ = np.histogram(prediction_values[np.isfinite(prediction_values)], bins=bin_edges)
+    target_counts, _ = np.histogram(target_values[np.isfinite(target_values)], bins=bin_edges)
+    return xr.Dataset({
+        "tmax_histogram_prediction": xr.DataArray(prediction_counts.astype(np.int64), dims=["tmax_bin"]),
+        "tmax_histogram_target": xr.DataArray(target_counts.astype(np.int64), dims=["tmax_bin"]),
+        "tmax_bin_edges": xr.DataArray(np.asarray(bin_edges, dtype=np.float32), dims=["tmax_bin_edge"]),
+    })
+
+def tmax_scatter_sample(prediction: xr.DataArray, target: xr.DataArray, target_exceeds: xr.DataArray,
+                        target_spell: xr.DataArray, num_points: int = 4000, seed: int = 42) -> xr.Dataset:
+    """Fixed-size random sample of daily-Tmax prediction/target pairs for a scatter plot,
+    each tagged by its observed category: heatwave, above threshold, or neither."""
+    point_prediction = prediction.mean("ensemble") if "ensemble" in prediction.dims else prediction
+    point_prediction, target, target_exceeds, target_spell = xr.broadcast(
+        point_prediction, target, target_exceeds, target_spell)
+    flat_prediction = np.asarray(point_prediction.values, dtype=float).ravel()
+    flat_target = np.asarray(target.values, dtype=float).ravel()
+    flat_exceeds = np.asarray(target_exceeds.values, dtype=bool).ravel()
+    flat_spell = np.asarray(target_spell.values, dtype=bool).ravel()
+    finite = np.flatnonzero(np.isfinite(flat_prediction) & np.isfinite(flat_target))
+    rng = np.random.default_rng(seed)
+    sampled = rng.choice(finite, size=min(num_points, len(finite)), replace=False)
+    category = np.where(flat_spell[sampled], "heatwave",
+                        np.where(flat_exceeds[sampled], "threshold", "none"))
+    return xr.Dataset({
+        "tmax_scatter_prediction": xr.DataArray(flat_prediction[sampled].astype(np.float32), dims=["sample"]),
+        "tmax_scatter_target": xr.DataArray(flat_target[sampled].astype(np.float32), dims=["sample"]),
+        "tmax_scatter_category": xr.DataArray(category, dims=["sample"]),
+    })
+
+
+def heatwave_conditioned_metrics(prediction: xr.DataArray, target: xr.DataArray,
+                                 threshold: xr.DataArray, day_dim: str = "day_idx",
+                                 target_spell: xr.DataArray | None = None,
+                                 valid_day: xr.DataArray | None = None,
+                                 antecedent_exceeds: xr.DataArray | None = None) -> xr.Dataset:
+    """Event primitives and conditional Tmax errors under both heatwave definitions: one day
+    above threshold ("_threshold"), and a >= 3 day spell counted from day 3 ("_heatwave")."""
+    # scores the definition where any day above p90 counts as an event
+    point_prediction = prediction.mean("ensemble") if "ensemble" in prediction.dims else prediction
+    conditional_pool_dim = day_dim if "forecast" in prediction.dims else None
+    target_exceeds = target > threshold
+    threshold_events = heatwave_event_primitives(prediction, target, prediction > threshold, target_exceeds)
+    threshold_conditional = conditional_tmax_errors(
+        point_prediction, target, target_exceeds, day_dim=conditional_pool_dim)
+
+    if target_spell is None:
+        target_spell = get_heatwaves(target, threshold, day_dim=day_dim, flag_full_spell=True)
+
+    # decides which forecast days belong to a 3-day spell, using the two observed days before the forecast
+    model_exceeds = prediction > threshold
+    if antecedent_exceeds is not None and "forecast" not in prediction.dims:
+        prediction_spell = (antecedent_exceeds.isel(antecedent=0) & antecedent_exceeds.isel(antecedent=1) & model_exceeds)
+    elif antecedent_exceeds is not None:
+        antecedent = antecedent_exceeds.rename({"antecedent": day_dim})
+        if "ensemble" in model_exceeds.dims:
+            antecedent = antecedent.expand_dims(ensemble=model_exceeds.ensemble)
+        spliced = xr.concat([antecedent, model_exceeds], dim=day_dim).astype(int)
+        if spliced.chunks is not None:
+            spliced = spliced.chunk({day_dim: -1})
+        end_of_spell = (spliced.rolling({day_dim: 3}, center=False).sum() >= 3).fillna(False)
+        prediction_spell = (
+            end_of_spell
+            .isel({day_dim: slice(None, None, -1)})
+            .rolling({day_dim: 3}, center=False, min_periods=1).max()
+            .isel({day_dim: slice(None, None, -1)})
+            .fillna(False).astype(bool)
+            .isel({day_dim: slice(2, None)})
+        )
+    elif prediction.sizes.get(day_dim, 1) < 3:
+        prediction_spell = xr.zeros_like(model_exceeds, dtype=bool)
+    else:
+        prediction_spell = get_heatwaves(prediction, threshold, day_dim=day_dim, flag_full_spell=True)
+
+    heatwave_events = heatwave_event_primitives(prediction, target, prediction_spell, target_spell)
+    heatwave_conditional = conditional_tmax_errors(point_prediction, target, target_spell, day_dim=conditional_pool_dim)
+    distribution = tmax_histogram(prediction, target)
+    scatter_sample = tmax_scatter_sample(prediction, target, target_exceeds, target_spell)
+
+    merge_pieces = [
+        threshold_events.rename({name: f"{name}_threshold" for name in threshold_events.data_vars}),
+        heatwave_events.rename({name: f"{name}_heatwave" for name in heatwave_events.data_vars}),
+        xr.Dataset({
+            "conditional_tmax_squared_error_case_threshold":threshold_conditional["squared_error_series"].astype(np.float32),
+            "conditional_tmax_squared_error_case_heatwave":heatwave_conditional["squared_error_series"].astype(np.float32),
+            "tmax_threshold_mean": xr.DataArray(np.float32(threshold.mean())),
+        }),
+        distribution,
+        scatter_sample,
+    ]
+    # how much of the region was hot each calendar day, observed and as a share of members
+    if valid_day is not None:
+        spatial_dims = [dimension for dimension in ("lat", "lon") if dimension in target.dims]
+        calendar_lead = ({day_dim: prediction[day_dim].values.min()} if "forecast" in prediction.dims else {})
+        calendar_valid_day = valid_day.sel(calendar_lead) if calendar_lead else valid_day
+        dates = pd.DatetimeIndex(np.asarray(calendar_valid_day.values, dtype="datetime64[ns]").ravel())
+        min_lat, max_lat, min_lon, max_lon = DENMARK_CALENDAR_REGION
+        half_cell_lat = float(abs(prediction.lat[1] - prediction.lat[0])) / 2
+        half_cell_lon = float(abs(prediction.lon[1] - prediction.lon[0])) / 2
+        in_region = ((prediction.lat >= min_lat) & (prediction.lat <= max_lat)
+                     & (prediction.lon >= min_lon) & (prediction.lon <= max_lon))
+        for cell_lat, cell_lon in DENMARK_CALENDAR_EXTRA_CELLS:
+            in_region = in_region | ((abs(prediction.lat - cell_lat) <= half_cell_lat)
+                                     & (abs(prediction.lon - cell_lon) <= half_cell_lon))
+        region_weights = cos_weights(prediction) * in_region
+
+        def to_series(per_case):
+            per_case = (per_case.sel(calendar_lead) if calendar_lead else per_case).broadcast_like(calendar_valid_day)
+            series = pd.Series(np.asarray(per_case.values, dtype=float).ravel(),index=dates).groupby(level=0).mean().sort_index()
+            return xr.DataArray(series.values.astype(np.float32), dims=["date"], coords={"date": series.index.values})
+
+        member_coverage = model_exceeds.astype(float).weighted(region_weights).mean(spatial_dims)
+        majority_by_member = (member_coverage > 0.5).astype(float)
+        calendar = {"calendar_model_certainty": to_series(
+            majority_by_member.mean("ensemble") if "ensemble" in prediction.dims else majority_by_member)}
+        calendar["calendar_observed_share"] = to_series(
+            target_exceeds.astype(float).weighted(region_weights).mean(spatial_dims))
+
+        # turns the hot days into observed heatwaves, region first so heat moving across it still counts
+        hot_day = calendar["calendar_observed_share"] > 0.5
+        gapless_days = pd.date_range(hot_day.date.values.min(), hot_day.date.values.max(), freq="D")
+        run_ends = hot_day.reindex(date=gapless_days, fill_value=False).astype(int).rolling(date=3).sum() >= 3
+        calendar["calendar_observed_heatwave"] = (
+            run_ends.isel(date=slice(None, None, -1))
+            .rolling(date=3, min_periods=1).max()
+            .isel(date=slice(None, None, -1))
+            .fillna(False).astype(np.float32)
+            .reindex(date=hot_day.date))
+        merge_pieces.append(xr.Dataset(calendar))
+    return xr.merge(merge_pieces, compat="equals", join="exact")
+
+
+def spread_and_skill_cases(prediction: xr.DataArray, target: xr.DataArray) -> xr.Dataset:
+    """Per-case ensemble variance and squared error of the ensemble mean, kept as the two
+    components so any window or bootstrap resample can form the spread-skill ratio itself."""
+    weights = xr.DataArray(np.cos(np.deg2rad(target.lat)), dims=["lat"], coords={"lat": target.lat})
+    if "ensemble" in prediction.dims:
+        members = int(prediction.sizes["ensemble"])
+        variance = prediction.var("ensemble").weighted(weights).mean(["lat", "lon"])
+        point_prediction = prediction.mean("ensemble")
+    else:
+        members = 1
+        variance = xr.zeros_like(target.isel(lat=0, lon=0, drop=True))
+        point_prediction = prediction
+    squared_error = ((point_prediction - target) ** 2).weighted(weights).mean(["lat", "lon"])
+    return xr.Dataset({
+        "ensemble_variance_case": variance.astype(np.float32).reset_coords(drop=True),
+        "squared_error_case": squared_error.astype(np.float32).reset_coords(drop=True),
+    }, attrs={"ensemble_members": members})
+
+
+def reconstruction_cases(prediction: xr.DataArray, target: xr.DataArray, threshold: xr.DataArray) -> xr.Dataset:
+    """Daily range, mean-position asymmetry and hours above threshold, scored per case on full
+    24-hour day blocks. Peak timing is scored separately by peak_time_ccrps."""
+    prediction_days = day_blocks_reshaped(drop_batch(prediction))
+    target_days = day_blocks_reshaped(drop_batch(target))
+    threshold_days = day_blocks_reshaped(drop_batch(threshold))
+    weights = cos_weights(target)
+
+    # measures how far the predicted warmest hour sits from the observed one on a 24-hour clock
+    prediction_peak = prediction_days.hour_of_day.isel(hour_of_day=prediction_days.argmax("hour_of_day").compute()) % 24
+    target_peak = target_days.hour_of_day.isel(hour_of_day=target_days.argmax("hour_of_day").compute()) % 24
+    angular = np.minimum(abs(prediction_peak - target_peak), 24 - abs(prediction_peak - target_peak))
+    peak_time_error = (angular.mean("ensemble") if "ensemble" in angular.dims else angular)
+
+    # takes the daily statistics back out of the reconstructed hours and scores them against truth
+    reaggregated = {}
+    for name, reducer in (("tmax", "max"), ("tmin", "min"), ("tmean", "mean")):
+        predicted = getattr(prediction_days, reducer)("hour_of_day")
+        observed = getattr(target_days, reducer)("hour_of_day")
+        point = predicted.mean("ensemble") if "ensemble" in predicted.dims else predicted
+        reaggregated[f"{name}_reaggregation_crps_case"] = ( crps_field(predicted, observed).weighted(weights).mean(["lat", "lon"]).astype(np.float32))
+        reaggregated[f"{name}_reaggregation_bias_case"] = ((point - observed).weighted(weights).mean(["lat", "lon"]).astype(np.float32))
+        reaggregated[f"{name}_daily"] = (predicted, observed)
+
+    prediction_range = reaggregated["tmax_daily"][0] - reaggregated["tmin_daily"][0]
+    target_range = reaggregated["tmax_daily"][1] - reaggregated["tmin_daily"][1]
+    reaggregated = {name: value for name, value in reaggregated.items() if not name.endswith("_daily")}
+    prediction_hours_above = (prediction_days > threshold_days).sum("hour_of_day").astype(float)
+    target_hours_above = (target_days > threshold_days).sum("hour_of_day").astype(float)
+
+    # measures where in its own daily range the cycle spends its time, 0.5 being symmetric
+    min_valid_range = 1.0
+    prediction_asymmetry = ((prediction_days.mean("hour_of_day") - prediction_days.min("hour_of_day")) / prediction_range)
+    target_asymmetry = ((target_days.mean("hour_of_day") - target_days.min("hour_of_day")) / target_range)
+    valid_asymmetry = target_range >= min_valid_range
+    prediction_asymmetry = prediction_asymmetry.where(prediction_range >= min_valid_range, 0.5)
+    target_asymmetry = target_asymmetry.where(valid_asymmetry)
+    point_range = (prediction_range.mean("ensemble") if "ensemble" in prediction_range.dims else prediction_range)
+    point_asymmetry = (prediction_asymmetry.mean("ensemble") if "ensemble" in prediction_asymmetry.dims else prediction_asymmetry)
+
+    return xr.Dataset({
+        "daily_range_crps_case": crps_field(prediction_range, target_range).weighted(weights).mean(["lat", "lon"]).astype(np.float32),
+        "daily_range_bias_case": (point_range - target_range).weighted(weights).mean(["lat", "lon"]).astype(np.float32),
+        "target_daily_range_case": target_range.weighted(weights).mean(["lat", "lon"]).astype(np.float32),
+        "asymmetry_crps_case": crps_field(prediction_asymmetry, target_asymmetry).weighted(weights).mean(["lat", "lon"]).astype(np.float32),
+        "asymmetry_bias_case": (point_asymmetry - target_asymmetry).weighted(weights).mean(["lat", "lon"]).astype(np.float32),
+        "target_asymmetry_case": target_asymmetry.weighted(weights).mean(["lat", "lon"]).astype(np.float32),
+        "hours_above_threshold_crps_case": crps_field(prediction_hours_above, target_hours_above).weighted(weights).mean(["lat", "lon"]).astype(np.float32),
+        "target_hours_above_threshold_case": target_hours_above.weighted(weights).mean(["lat", "lon"]).astype(np.float32),
+        **reaggregated,
+    }).reset_coords(drop=True)
+
+
+def reconstruction_tmax_fields(prediction: xr.DataArray, target: xr.DataArray, p90: xr.DataArray
+                               ) -> tuple[xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray]:
+    """Build exp3 and exp4's (forecast, day_idx) Tmax case grid from an hourly reconstruction.
+
+    The counterpart of fixed_lead_tmax_fields for runs that produce whole 24-hour days:
+    daily Tmax is the maximum over each day block rather than over two fixed frames.
+
+    Returns the same six arrays, with day_idx in place of lead_day. The observed spells are
+    found by first collapsing every forecast's days into one dated series, so the three-day
+    rule runs over real consecutive calendar days instead of within a single forecast window.
+    """
+    # takes the daily maximum of each reconstructed day and its matching truth and threshold
+    prediction_days = day_blocks_reshaped(drop_batch(prediction))
+    target_days = day_blocks_reshaped(drop_batch(target))
+    members = prediction_days.max("hour_of_day")
+    truth = target_days.max("hour_of_day")
+    forecast = pd.DatetimeIndex(members.forecast.values).floor("D")
+    day_index = np.asarray(members.day_idx.values, dtype=int)
+    valid_days = forecast.values[:, None] + day_index[None, :] * np.timedelta64(1, "D")
+    day_of_year = xr.DataArray(
+        np.minimum(pd.DatetimeIndex(valid_days.ravel()).dayofyear.values.reshape(valid_days.shape), 365),
+        dims=["forecast", "day_idx"],
+        coords={"forecast": members.forecast, "day_idx": members.day_idx})
+    threshold = p90.sel(dayofyear=day_of_year).interp(lat=members.lat, lon=members.lon)
+    day_indexer = xr.DataArray(valid_days, dims=["forecast", "day_idx"], coords={"forecast": members.forecast, "day_idx": members.day_idx})
+
+    # puts the observed days into a single dated series, one entry per day, so the 3-day rule
+    # runs over real consecutive days instead of within one forecast's window
+    stacked_truth = truth.stack(case=("forecast", "day_idx"))
+    continuous_truth = (stacked_truth.drop_vars(["case", "forecast", "day_idx"])
+                        .assign_coords(case=pd.DatetimeIndex(valid_days.ravel()))
+                        .groupby("case").max().rename({"case": "time"}).sortby("time"))
+    continuous_truth = continuous_truth.reindex( time=pd.date_range(continuous_truth.time.values.min(), continuous_truth.time.values.max(), freq="D"))
+    continuous_day_of_year = xr.DataArray( np.minimum(pd.DatetimeIndex(continuous_truth.time.values).dayofyear, 365), dims=["time"], coords={"time": continuous_truth.time})
+    continuous_threshold = p90.sel(dayofyear=continuous_day_of_year).interp( lat=members.lat, lon=members.lon)
+    continuous_spell = get_heatwaves(continuous_truth, continuous_threshold, day_dim="time", flag_full_spell=True)
+    target_spell = continuous_spell.sel(time=day_indexer)
+
+    # collects the two observed days before each forecast, the only history the model's flag may use
+    continuous_exceeds = continuous_truth > continuous_threshold
+    first_valid_days = forecast.values + int(day_index.min()) * np.timedelta64(1, "D")
+
+    antecedent_days = xr.DataArray(
+        first_valid_days[:, None] + np.array([-2, -1])[None, :] * np.timedelta64(1, "D"),
+        dims=["forecast", "antecedent"],
+        coords={"forecast": members.forecast, "antecedent": [-2, -1]})
+    antecedent_exceeds = continuous_exceeds.reindex( time=np.union1d(continuous_exceeds.time.values, np.unique(antecedent_days.values)), fill_value=False).sel(time=antecedent_days).drop_vars("time")
+    return members, truth, threshold, target_spell, day_indexer, antecedent_exceeds
