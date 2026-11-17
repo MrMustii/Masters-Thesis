@@ -18,6 +18,14 @@ dependencies:
   - ipykernel
   - google-cloud-storage
   - ipywidgets
+  - boto3
+  - cdsapi
+  - cfgrib
+  - cmcrameri
+  - gcsfs
+  - jupyterlab
+  - netcdf4
+  - s3fs
   - pip:
     - --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-6.2.4/
     - --extra-index-url https://download.pytorch.org/whl/
@@ -35,10 +43,5 @@ dependencies:
     - pytough
     - xarray-tensorstore
 
-# Added cmcrameri cartopy 
-# Added jupyterlab
-# Added cdsapi 
-# Added netcdf4 cfgrib
-# Added gcsfs
-# Added s3fs 
-# Added boto3
+# containers/update.def layers scores, scoringrules, xskillscore and scikit-learn
+# on top of an image built from this file.
